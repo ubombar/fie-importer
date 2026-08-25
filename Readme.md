@@ -31,7 +31,8 @@ In particular, information that is not directly available in a captured FIE, suc
 ```bash
 fie-importer \
     --pds ./pds.jsonl \
-    --capture-dir ./captures/experiment \
+    --events-dir ./captures/experiment \
+    --fies-dir ./captures/experiment \
     --clickhouse-address localhost:9000 \
     --clickhouse-database retina
 ```
