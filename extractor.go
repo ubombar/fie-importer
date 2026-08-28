@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/dioptra-io/retina-commons/api/v1"
 	api "github.com/dioptra-io/retina-commons/api/v1"
 	"github.com/marcboeker/go-duckdb/v2"
 	"golang.org/x/sync/errgroup"
@@ -45,6 +46,7 @@ type CaptureExtractor struct {
 	pdMap         map[uint64]*api.ProbingDirective
 	fieHandles    []*fieHandle
 	fieIndex      int
+	nextSeq       uint64
 	loaded        bool
 }
 
@@ -58,6 +60,7 @@ func NewCaptureExtractor(cfg CaptureExtractorConfig) (*CaptureExtractor, error) 
 		pdMap:         make(map[uint64]*api.ProbingDirective),
 		fieHandles:    make([]*fieHandle, 0),
 		fieIndex:      0,
+		nextSeq:       0,
 		loaded:        false,
 	}, nil
 }
@@ -95,6 +98,7 @@ func (x *CaptureExtractor) Load() (err error) {
 	}
 
 	x.loaded = true
+	x.nextSeq = 0
 	return nil
 }
 
@@ -114,8 +118,40 @@ func (x *CaptureExtractor) Close() error {
 	x.fieHandles = nil
 	x.fieIndex = 0
 	x.loaded = false
+	x.nextSeq = 0
 
 	return firstErr
+}
+
+func (x *CaptureExtractor) EmittedCount() uint64 {
+	return x.nextSeq
+}
+
+func (x *CaptureExtractor) PDs() ([]*api.ProbingDirective, error) {
+	if !x.loaded {
+		return nil, fmt.Errorf("cannot get PDs before loading")
+	}
+
+	pds := make([]*api.ProbingDirective, 0, len(x.pdMap))
+	for _, pd := range x.pdMap {
+		pds = append(pds, pd)
+	}
+
+	return pds, nil
+}
+
+func (x *CaptureExtractor) AgentTerms() ([]*AgentTerm, error) {
+	if !x.loaded {
+		return nil, fmt.Errorf("cannot get agent terms before loading")
+	}
+
+	var terms []*AgentTerm
+
+	for _, agentTerms := range x.agentTermsMap {
+		terms = append(terms, agentTerms...)
+	}
+
+	return terms, nil
 }
 
 // Next reads from the appropriate FIE rotation file and returns the constructed
@@ -144,7 +180,7 @@ func (x *CaptureExtractor) Next() (*api.ForwardingInfoElement, error) {
 		if err != nil {
 			return nil, fmt.Errorf("construct FIE from %q: %w", fieHandle.pathName, err)
 		}
-
+		x.nextSeq++
 		return fie, nil
 	}
 }
@@ -154,14 +190,6 @@ func (x *CaptureExtractor) constructFIEFromFIERow(h *fieHandle, row *fieRow) (*a
 	pd, ok := x.pdMap[uint64(row.probingDirectiveID)]
 	if !ok {
 		return nil, fmt.Errorf("probing directive %d not found", row.probingDirectiveID)
-	}
-
-	if row.protocol != pd.Protocol {
-		return nil, fmt.Errorf("protocol mismatch for PD %d: table=%d pd=%d", row.probingDirectiveID, row.protocol, pd.Protocol)
-	}
-
-	if row.isIPv4 != (pd.IPVersion == api.IPv4) {
-		return nil, fmt.Errorf("IP version mismatch for PD %d", row.probingDirectiveID)
 	}
 
 	// captureSecond is relative to the interval start encoded in
@@ -176,13 +204,10 @@ func (x *CaptureExtractor) constructFIEFromFIERow(h *fieHandle, row *fieRow) (*a
 	farRecvDelta := uint8((row.timeDeltas >> 24) & 0x3f)
 
 	decodeTimestamp := func(delta uint8) time.Time {
-		switch delta {
-		case 62, 63:
-			// Unknown / missing / invalid / more than 62 seconds old timestamp.
+		if delta == 63 {
 			return time.Time{}
-		default:
-			return captureTime.Add(-time.Duration(delta) * time.Second)
 		}
+		return captureTime.Add(-time.Duration(delta) * time.Second)
 	}
 
 	productionTime := decodeTimestamp(productionDelta)
@@ -229,11 +254,7 @@ func (x *CaptureExtractor) constructFIEFromFIERow(h *fieHandle, row *fieRow) (*a
 		ProductionTimestamp: productionTime,
 	}
 
-	// NearInfo existed if we retained some information about the near probe.
-	//
-	// Normally the reply address is enough to determine this, but checking
-	// the timestamp deltas as well handles cases where the address is nil
-	// but timing information exists.
+	// NearInfo existed if a near reply address was retained.
 	if len(row.nearReplyAddress) > 0 {
 		fie.NearInfo = &api.Info{
 			ProbeTTL:          pd.NearTTL,
@@ -259,7 +280,7 @@ func (x *CaptureExtractor) constructFIEFromFIERow(h *fieHandle, row *fieRow) (*a
 func (x *CaptureExtractor) loadPDMap() error {
 	pds, err := loadPDs(x.cfg.EventsDir)
 	if err != nil {
-		return fmt.Errorf("cannot build inserted PDs from evnets: %w", err)
+		return fmt.Errorf("cannot build inserted PDs from events: %w", err)
 	}
 
 	for _, pd := range pds {
@@ -313,15 +334,12 @@ func (x *CaptureExtractor) loadFIEHandles() error {
 	return nil
 }
 
-// This is the handler that is responsible from decoding the fies.
 type fieHandle struct {
 	pathName  string
 	time      time.Time
 	db        *sql.DB
 	connector *duckdb.Connector
-
-	tableIndex int
-	rows       *sql.Rows
+	rows      *sql.Rows
 }
 
 var fieFilenameRE = regexp.MustCompile(`^fies-(\d{8}T\d{6}Z)\.duckdb$`)
@@ -370,65 +388,43 @@ func NewFIEHandle(pathName string) (*fieHandle, error) {
 }
 
 func (f *fieHandle) Next() (*fieRow, error) {
-	type fieTable struct {
-		name     string
-		protocol api.Protocol
-		isIPv4   bool
-	}
-	var fieTables = []fieTable{
-		{"fies_icmpv4", api.ICMP, true},
-		{"fies_icmpv6", api.ICMPv6, false},
-		{"fies_udpv4", api.UDP, true},
-		{"fies_udpv6", api.UDP, false},
+	if f.rows == nil {
+		const query = `
+			SELECT
+				probing_directive_id,
+				near_reply_address,
+				far_reply_address,
+				capture_second,
+				time_deltas
+			FROM fies
+		`
+
+		rows, err := f.db.Query(query)
+		if err != nil {
+			return nil, fmt.Errorf("query FIE rows: %w", err)
+		}
+		f.rows = rows
 	}
 
-	for {
-		if f.tableIndex >= len(fieTables) {
-			return nil, io.EOF
-		}
-		if f.rows == nil {
-			table := fieTables[f.tableIndex]
-			// #nosec G201
-			query := fmt.Sprintf(`
-				SELECT
-					probing_directive_id,
-					near_reply_address,
-					far_reply_address,
-					capture_second,
-					time_deltas
-				FROM %s
-			`, table.name)
-			rows, err := f.db.Query(query)
-			if err != nil {
-				return nil, fmt.Errorf("query table %q: %w", table.name, err)
-			}
-			f.rows = rows
-		}
-		if f.rows.Next() {
-			table := fieTables[f.tableIndex]
-			var row fieRow
-			if err := f.rows.Scan(
-				&row.probingDirectiveID,
-				&row.nearReplyAddress,
-				&row.farReplyAddress,
-				&row.captureSecond,
-				&row.timeDeltas,
-			); err != nil {
-				return nil, fmt.Errorf("scan row from table %q: %w", table.name, err)
-			}
-			row.protocol = table.protocol
-			row.isIPv4 = table.isIPv4
-			return &row, nil
-		}
+	if !f.rows.Next() {
 		if err := f.rows.Err(); err != nil {
-			return nil, fmt.Errorf("iterate table %q: %w", fieTables[f.tableIndex].name, err)
+			return nil, fmt.Errorf("iterate FIE rows: %w", err)
 		}
-		if err := f.rows.Close(); err != nil {
-			return nil, fmt.Errorf("close rows for table %q: %w", fieTables[f.tableIndex].name, err)
-		}
-		f.rows = nil
-		f.tableIndex++
+		return nil, io.EOF
 	}
+
+	var row fieRow
+	if err := f.rows.Scan(
+		&row.probingDirectiveID,
+		&row.nearReplyAddress,
+		&row.farReplyAddress,
+		&row.captureSecond,
+		&row.timeDeltas,
+	); err != nil {
+		return nil, fmt.Errorf("scan FIE row: %w", err)
+	}
+
+	return &row, nil
 }
 
 func (f *fieHandle) Close() error {
@@ -464,8 +460,6 @@ type fieRow struct {
 	farReplyAddress    []byte
 	captureSecond      uint16
 	timeDeltas         uint32
-	protocol           api.Protocol
-	isIPv4             bool
 }
 
 func loadPDs(eventsDir string) ([]*api.ProbingDirective, error) {

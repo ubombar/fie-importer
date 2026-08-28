@@ -2,12 +2,12 @@
 
 `fie-importer` is a small, single-purpose command-line utility for importing the artifacts of a completed Retina experiment into ClickHouse.
 
-It combines three sources:
+It combines two artifact sources:
 
 - the Retina events emitted during the experiment;
 - the FIEs captured by the Retina orchestrator.
 
-The importer creates two ClickHouse tables containing the PDs and the enriched FIEs, ready for subsequent analysis.
+The importer creates three ClickHouse tables containing the Probing Directives, agent connection terms, and enriched FIEs, ready for subsequent analysis.
 
 ## Usage
 
@@ -17,7 +17,7 @@ fie-importer \
     --fies-dir ./captures/experiment \
     --clickhouse-address localhost:9000 \
     --clickhouse-database retina \
-    --label myexperiment
+    --name myexperiment
 ```
 
 ClickHouse credentials are read from the environment:
@@ -52,16 +52,6 @@ Credentials are intentionally not passed as command-line arguments.
 
 ## Input
 
-### Probing Directives
-
-`--pds` points to a JSONL file containing the Probing Directives used to generate the experiment traffic.
-
-```text
-pds.jsonl
-```
-
-Each line contains one Probing Directive.
-
 ### Retina events
 
 `--events-dir` points to the directory containing events emitted by the Retina orchestrator.
@@ -79,41 +69,15 @@ events-20260825T180000Z.jsonl
 events-20260826T000000Z.jsonl
 ```
 
-The event stream provides additional information required when constructing the final FIE representation, including the FIE source address.
+The event stream provides the Probing Directives used during the experiment and the agent connection and disconnection events required to reconstruct agent terms.
+
+Agent terms are also used while reconstructing FIEs, including determining the source address associated with an agent at the time an FIE was captured.
 
 ### FIE captures
 
 `--fies-dir` points to the directory containing the DuckDB FIE capture files produced by the Retina capturer.
 
 The importer discovers the DuckDB capture files in this directory and processes them in post-processing rather than connecting to a live Retina stream.
-
-## Import process
-
-The importer performs the following pipeline:
-
-```text
-pds.jsonl ───────────────────────────────► <name>__pds
-                                                │
-Retina events ──► experiment metadata           │
-                         │                      │
-                         ▼                      │
-DuckDB FIEs ──────► enrich/transform FIEs ◄─────┘
-                         │
-                         ▼
-                    <name>__fies
-```
-
-The importer:
-
-1. reads the Probing Directives from `pds.jsonl`;
-2. reads the Retina event files from `--events-dir`;
-3. extracts the metadata required to enrich the captured FIEs;
-4. reads the DuckDB FIE capture files from `--fies-dir`;
-5. transforms the PD and FIE records into their ClickHouse schemas;
-6. creates the destination tables;
-7. inserts the resulting records into ClickHouse.
-
-The source files are never modified.
 
 ## Output tables
 
@@ -128,6 +92,7 @@ the importer creates:
 
 ```text
 retina.myexperiment__pds
+retina.myexperiment__agent_terms
 retina.myexperiment__fies
 ```
 
@@ -163,9 +128,38 @@ SETTINGS
     index_granularity = 8192;
 ```
 
+### `<name>__agent_terms`
+
+The agent-term table contains the periods during which agents were connected and active during the experiment.
+
+Each term records the agent address and port observed when the agent connected, along with the beginning and end of that connection period.
+
+An `end_time` of `NULL` indicates that no corresponding disconnection event was observed before the event capture ended.
+
+```sql
+CREATE TABLE <database>.<name>__agent_terms
+(
+    `agent_id`       String,
+    `agent_ip`       IPv6,
+    `agent_port`     UInt16,
+    `beginning_time` DateTime64(9, 'UTC'),
+    `end_time`       Nullable(DateTime64(9, 'UTC'))
+)
+ENGINE = MergeTree
+ORDER BY
+(
+    agent_id,
+    beginning_time
+)
+SETTINGS
+    index_granularity = 8192;
+```
+
 ### `<name>__fies`
 
 The FIE table contains the captured FIEs enriched with the information required for analysis.
+
+The global `sequence_number` is reconstructed from the preserved capture order of the DuckDB FIE records.
 
 ```sql
 CREATE TABLE <database>.<name>__fies
@@ -205,9 +199,9 @@ The FIE and event captures may share a directory:
 
 ```text
 experiment/
-├── pds.jsonl
 └── captures/
     ├── events-20260825T180000Z.jsonl
+    ├── events-20260826T000000Z.jsonl
     ├── fies-20260825T180000Z.duckdb
     ├── fies-20260826T000000Z.duckdb
     └── ...
@@ -220,7 +214,6 @@ export CH_USER="default"
 export CH_PASSWORD="password"
 
 fie-importer \
-    --pds ./experiment/pds.jsonl \
     --events-dir ./experiment/captures \
     --fies-dir ./experiment/captures \
     --clickhouse-address localhost:9000 \
@@ -232,6 +225,7 @@ This produces:
 
 ```text
 retina.myexperiment__pds
+retina.myexperiment__agent_terms
 retina.myexperiment__fies
 ```
 
