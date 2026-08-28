@@ -17,6 +17,8 @@ import (
 
 const fieBatchSize = 100_000
 
+var zeroTimestamp = time.Unix(0, 0).UTC()
+
 type config struct {
 	eventsDir          string
 	fiesDir            string
@@ -181,7 +183,7 @@ CREATE TABLE %s
     ),
     first_half_word      UInt16,
     second_half_word     UInt16,
-    event_timestamp      Nullable(DateTime64(9, 'UTC'))
+    event_timestamp      DateTime64(9, 'UTC')
 )
 ENGINE = MergeTree
 ORDER BY
@@ -200,7 +202,7 @@ CREATE TABLE %s
     agent_ip       IPv6,
     agent_port     UInt16,
     beginning_time DateTime64(9, 'UTC'),
-    end_time       Nullable(DateTime64(9, 'UTC'))
+    end_time       DateTime64(9, 'UTC')
 )
 ENGINE = MergeTree
 ORDER BY
@@ -223,13 +225,13 @@ CREATE TABLE %s
     destination_address      IPv6,
     near_probe_ttl           UInt8,
     near_reply_address       IPv6,
-    near_sent_timestamp      Nullable(DateTime),
-    near_received_timestamp  Nullable(DateTime),
+    near_sent_timestamp      DateTime,
+    near_received_timestamp  DateTime,
     far_probe_ttl            UInt8,
     far_reply_address        IPv6,
-    far_sent_timestamp       Nullable(DateTime),
-    far_received_timestamp   Nullable(DateTime),
-    production_timestamp     Nullable(DateTime)
+    far_sent_timestamp       DateTime,
+    far_received_timestamp   DateTime,
+    production_timestamp     DateTime
 )
 ENGINE = MergeTree
 ORDER BY
@@ -304,7 +306,7 @@ INSERT INTO %s
 			nextHeaderType,
 			firstHalfWord,
 			secondHalfWord,
-			nil,
+			zeroTimestamp,
 		); err != nil {
 			return fmt.Errorf("append PD %d: %w", pd.ProbingDirectiveID, err)
 		}
@@ -381,12 +383,6 @@ INSERT INTO %s
 			continue
 		}
 
-		var endTime *time.Time
-		if !term.EndTime.IsZero() {
-			t := term.EndTime.UTC()
-			endTime = &t
-		}
-
 		if term.AgentPort < 0 || term.AgentPort > 65535 {
 			return fmt.Errorf("agent %q port %d exceeds uint16", term.AgentID, term.AgentPort)
 		}
@@ -395,8 +391,8 @@ INSERT INTO %s
 			term.AgentID,
 			toIPv6(term.AgentIP),
 			uint16(term.AgentPort),
-			term.BeginningTime.UTC(),
-			endTime,
+			clickhouseTime(term.BeginningTime),
+			clickhouseTime(term.EndTime),
 		); err != nil {
 			return fmt.Errorf("append agent term for %q: %w", term.AgentID, err)
 		}
@@ -499,35 +495,27 @@ func appendFIE(batch driver.Batch, sequenceNumber uint64, fie *api.ForwardingInf
 	var (
 		nearProbeTTL          uint8
 		nearReplyAddress      = net.IPv6zero
-		nearSentTimestamp     *time.Time
-		nearReceivedTimestamp *time.Time
+		nearSentTimestamp     = zeroTimestamp
+		nearReceivedTimestamp = zeroTimestamp
 
 		farProbeTTL          uint8
 		farReplyAddress      = net.IPv6zero
-		farSentTimestamp     *time.Time
-		farReceivedTimestamp *time.Time
+		farSentTimestamp     = zeroTimestamp
+		farReceivedTimestamp = zeroTimestamp
 	)
 
 	if fie.NearInfo != nil {
 		nearProbeTTL = fie.NearInfo.ProbeTTL
-
-		if fie.NearInfo.ReplyAddress != nil && !fie.NearInfo.ReplyAddress.IsUnspecified() {
-			nearReplyAddress = toIPv6(fie.NearInfo.ReplyAddress)
-		}
-
-		nearSentTimestamp = nullableTime(fie.NearInfo.SentTimestamp)
-		nearReceivedTimestamp = nullableTime(fie.NearInfo.ReceivedTimestamp)
+		nearReplyAddress = toIPv6(fie.NearInfo.ReplyAddress)
+		nearSentTimestamp = clickhouseTime(fie.NearInfo.SentTimestamp)
+		nearReceivedTimestamp = clickhouseTime(fie.NearInfo.ReceivedTimestamp)
 	}
 
 	if fie.FarInfo != nil {
 		farProbeTTL = fie.FarInfo.ProbeTTL
-
-		if fie.FarInfo.ReplyAddress != nil && !fie.FarInfo.ReplyAddress.IsUnspecified() {
-			farReplyAddress = toIPv6(fie.FarInfo.ReplyAddress)
-		}
-
-		farSentTimestamp = nullableTime(fie.FarInfo.SentTimestamp)
-		farReceivedTimestamp = nullableTime(fie.FarInfo.ReceivedTimestamp)
+		farReplyAddress = toIPv6(fie.FarInfo.ReplyAddress)
+		farSentTimestamp = clickhouseTime(fie.FarInfo.SentTimestamp)
+		farReceivedTimestamp = clickhouseTime(fie.FarInfo.ReceivedTimestamp)
 	}
 
 	return batch.Append(
@@ -546,7 +534,7 @@ func appendFIE(batch driver.Batch, sequenceNumber uint64, fie *api.ForwardingInf
 		farReplyAddress,
 		farSentTimestamp,
 		farReceivedTimestamp,
-		fie.ProductionTimestamp,
+		clickhouseTime(fie.ProductionTimestamp),
 	)
 }
 
@@ -568,4 +556,12 @@ func toIPv6(ip net.IP) net.IP {
 	copy(out, v6)
 
 	return out
+}
+
+func clickhouseTime(t time.Time) time.Time {
+	if t.IsZero() {
+		return zeroTimestamp
+	}
+
+	return t.UTC()
 }
