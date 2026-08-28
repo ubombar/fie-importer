@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"regexp"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -27,8 +26,6 @@ type config struct {
 	clickhouseUser     string
 	clickhousePassword string
 }
-
-var identifierRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func main() {
 	if err := run(); err != nil {
@@ -67,7 +64,7 @@ func run() (retErr error) {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	if err := createTables(ctx, conn, cfg); err != nil {
 		return fmt.Errorf("create ClickHouse tables: %w", err)
@@ -106,8 +103,8 @@ func run() (retErr error) {
 	return nil
 }
 
-func parseConfig() (config, error) {
-	var cfg config
+func parseConfig() (*config, error) {
+	cfg := &config{}
 
 	flag.StringVar(&cfg.eventsDir, "events-dir", "", "directory containing events-*.jsonl")
 	flag.StringVar(&cfg.fiesDir, "fies-dir", "", "directory containing FIE DuckDB captures")
@@ -121,31 +118,23 @@ func parseConfig() (config, error) {
 
 	switch {
 	case cfg.eventsDir == "":
-		return config{}, fmt.Errorf("--events-dir is required")
+		return nil, fmt.Errorf("--events-dir is required")
 	case cfg.fiesDir == "":
-		return config{}, fmt.Errorf("--fies-dir is required")
+		return nil, fmt.Errorf("--fies-dir is required")
 	case cfg.clickhouseAddress == "":
-		return config{}, fmt.Errorf("--clickhouse-address is required")
+		return nil, fmt.Errorf("--clickhouse-address is required")
 	case cfg.clickhouseDatabase == "":
-		return config{}, fmt.Errorf("--clickhouse-database is required")
+		return nil, fmt.Errorf("--clickhouse-database is required")
 	case cfg.name == "":
-		return config{}, fmt.Errorf("--name is required")
+		return nil, fmt.Errorf("--name is required")
 	case cfg.clickhouseUser == "":
-		return config{}, fmt.Errorf("CH_USER is required")
-	}
-
-	if !identifierRE.MatchString(cfg.clickhouseDatabase) {
-		return config{}, fmt.Errorf("invalid ClickHouse database name %q", cfg.clickhouseDatabase)
-	}
-
-	if !identifierRE.MatchString(cfg.name) {
-		return config{}, fmt.Errorf("invalid experiment name %q", cfg.name)
+		return nil, fmt.Errorf("CH_USER is required")
 	}
 
 	return cfg, nil
 }
 
-func openClickHouse(ctx context.Context, cfg config) (clickhouse.Conn, error) {
+func openClickHouse(ctx context.Context, cfg *config) (clickhouse.Conn, error) {
 	conn, err := clickhouse.Open(&clickhouse.Options{
 		Addr: []string{cfg.clickhouseAddress},
 		Auth: clickhouse.Auth{
@@ -170,13 +159,14 @@ func openClickHouse(ctx context.Context, cfg config) (clickhouse.Conn, error) {
 	return conn, nil
 }
 
-func createTables(ctx context.Context, conn clickhouse.Conn, cfg config) error {
+//nolint:funlen
+func createTables(ctx context.Context, conn clickhouse.Conn, cfg *config) error {
 	pdTable := tableName(cfg, "pds")
 	agentTermsTable := tableName(cfg, "agent_terms")
 	fieTable := tableName(cfg, "fies")
 
 	pdDDL := fmt.Sprintf(`
-CREATE TABLE IF NOT EXISTS %s
+CREATE TABLE %s
 (
     probing_directive_id UInt64,
     agent_id             String,
@@ -204,7 +194,7 @@ SETTINGS index_granularity = 8192
 `, pdTable)
 
 	agentTermsDDL := fmt.Sprintf(`
-CREATE TABLE IF NOT EXISTS %s
+CREATE TABLE %s
 (
     agent_id       String,
     agent_ip       IPv6,
@@ -222,7 +212,7 @@ SETTINGS index_granularity = 8192
 `, agentTermsTable)
 
 	fieDDL := fmt.Sprintf(`
-CREATE TABLE IF NOT EXISTS %s
+CREATE TABLE %s
 (
     sequence_number          UInt64,
     agent_id                 String,
@@ -231,12 +221,12 @@ CREATE TABLE IF NOT EXISTS %s
     protocol                 UInt8,
     source_address           IPv6,
     destination_address      IPv6,
-    near_probe_ttl           Nullable(UInt8),
-    near_reply_address       Nullable(IPv6),
+    near_probe_ttl           UInt8,
+    near_reply_address       IPv6,
     near_sent_timestamp      Nullable(DateTime),
     near_received_timestamp  Nullable(DateTime),
-    far_probe_ttl            Nullable(UInt8),
-    far_reply_address        Nullable(IPv6),
+    far_probe_ttl            UInt8,
+    far_reply_address        IPv6,
     far_sent_timestamp       Nullable(DateTime),
     far_received_timestamp   Nullable(DateTime),
     production_timestamp     Nullable(DateTime)
@@ -267,7 +257,7 @@ SETTINGS index_granularity = 8192
 	return nil
 }
 
-func insertPDs(ctx context.Context, conn clickhouse.Conn, cfg config, pds []*api.ProbingDirective) error {
+func insertPDs(ctx context.Context, conn clickhouse.Conn, cfg *config, pds []*api.ProbingDirective) error {
 	if len(pds) == 0 {
 		return nil
 	}
@@ -364,7 +354,7 @@ func nextHeaderValues(pd *api.ProbingDirective) (string, uint16, uint16, error) 
 	}
 }
 
-func insertAgentTerms(ctx context.Context, conn clickhouse.Conn, cfg config, terms []*AgentTerm) error {
+func insertAgentTerms(ctx context.Context, conn clickhouse.Conn, cfg *config, terms []*AgentTerm) error {
 	if len(terms) == 0 {
 		return nil
 	}
@@ -419,7 +409,7 @@ INSERT INTO %s
 	return nil
 }
 
-func insertFIEs(ctx context.Context, conn clickhouse.Conn, cfg config, extractor *CaptureExtractor) (uint64, error) {
+func insertFIEs(ctx context.Context, conn clickhouse.Conn, cfg *config, extractor *CaptureExtractor) (uint64, error) {
 	var inserted uint64
 
 	batch, err := newFIEBatch(ctx, conn, cfg)
@@ -474,7 +464,7 @@ func insertFIEs(ctx context.Context, conn clickhouse.Conn, cfg config, extractor
 	return inserted, nil
 }
 
-func newFIEBatch(ctx context.Context, conn clickhouse.Conn, cfg config) (driver.Batch, error) {
+func newFIEBatch(ctx context.Context, conn clickhouse.Conn, cfg *config) (driver.Batch, error) {
 	query := fmt.Sprintf(`
 INSERT INTO %s
 (
@@ -507,20 +497,19 @@ INSERT INTO %s
 
 func appendFIE(batch driver.Batch, sequenceNumber uint64, fie *api.ForwardingInfoElement) error {
 	var (
-		nearProbeTTL          *uint8
-		nearReplyAddress      net.IP
+		nearProbeTTL          uint8
+		nearReplyAddress      = net.IPv6zero
 		nearSentTimestamp     *time.Time
 		nearReceivedTimestamp *time.Time
 
-		farProbeTTL          *uint8
-		farReplyAddress      net.IP
+		farProbeTTL          uint8
+		farReplyAddress      = net.IPv6zero
 		farSentTimestamp     *time.Time
 		farReceivedTimestamp *time.Time
 	)
 
 	if fie.NearInfo != nil {
-		ttl := fie.NearInfo.ProbeTTL
-		nearProbeTTL = &ttl
+		nearProbeTTL = fie.NearInfo.ProbeTTL
 
 		if fie.NearInfo.ReplyAddress != nil && !fie.NearInfo.ReplyAddress.IsUnspecified() {
 			nearReplyAddress = toIPv6(fie.NearInfo.ReplyAddress)
@@ -531,8 +520,7 @@ func appendFIE(batch driver.Batch, sequenceNumber uint64, fie *api.ForwardingInf
 	}
 
 	if fie.FarInfo != nil {
-		ttl := fie.FarInfo.ProbeTTL
-		farProbeTTL = &ttl
+		farProbeTTL = fie.FarInfo.ProbeTTL
 
 		if fie.FarInfo.ReplyAddress != nil && !fie.FarInfo.ReplyAddress.IsUnspecified() {
 			farReplyAddress = toIPv6(fie.FarInfo.ReplyAddress)
@@ -551,18 +539,18 @@ func appendFIE(batch driver.Batch, sequenceNumber uint64, fie *api.ForwardingInf
 		toIPv6(fie.SourceAddress),
 		toIPv6(fie.DestinationAddress),
 		nearProbeTTL,
-		nullableIP(nearReplyAddress),
+		nearReplyAddress,
 		nearSentTimestamp,
 		nearReceivedTimestamp,
 		farProbeTTL,
-		nullableIP(farReplyAddress),
+		farReplyAddress,
 		farSentTimestamp,
 		farReceivedTimestamp,
-		nullableTime(fie.ProductionTimestamp),
+		fie.ProductionTimestamp,
 	)
 }
 
-func tableName(cfg config, suffix string) string {
+func tableName(cfg *config, suffix string) string {
 	return fmt.Sprintf("`%s`.`%s__%s`", cfg.clickhouseDatabase, cfg.name, suffix)
 }
 
@@ -580,21 +568,4 @@ func toIPv6(ip net.IP) net.IP {
 	copy(out, v6)
 
 	return out
-}
-
-func nullableIP(ip net.IP) any {
-	if ip == nil {
-		return nil
-	}
-
-	return ip
-}
-
-func nullableTime(t time.Time) *time.Time {
-	if t.IsZero() {
-		return nil
-	}
-
-	utc := t.UTC()
-	return &utc
 }

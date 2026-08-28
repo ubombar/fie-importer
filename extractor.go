@@ -17,7 +17,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/dioptra-io/retina-commons/api/v1"
 	api "github.com/dioptra-io/retina-commons/api/v1"
 	"github.com/marcboeker/go-duckdb/v2"
 	"golang.org/x/sync/errgroup"
