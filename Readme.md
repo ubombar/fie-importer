@@ -4,7 +4,6 @@
 
 It combines three sources:
 
-- the Probing Directives used for the experiment;
 - the Retina events emitted during the experiment;
 - the FIEs captured by the Retina orchestrator.
 
@@ -14,12 +13,11 @@ The importer creates two ClickHouse tables containing the PDs and the enriched F
 
 ```bash
 fie-importer \
-    --pds ./pds.jsonl \
     --events-dir ./captures/experiment \
     --fies-dir ./captures/experiment \
     --clickhouse-address localhost:9000 \
     --clickhouse-database retina \
-    --name myexperiment
+    --label myexperiment
 ```
 
 ClickHouse credentials are read from the environment:
@@ -33,7 +31,6 @@ export CH_PASSWORD="password"
 
 | Flag                    | Description                                                                                         |
 | ----------------------- | --------------------------------------------------------------------------------------------------- |
-| `--pds`                 | Path to the JSONL file containing the Probing Directives used for the experiment.                   |
 | `--events-dir`          | Directory containing the Retina event captures. Only files matching `events-*.jsonl` are processed. |
 | `--fies-dir`            | Directory containing the FIE captures. Only DuckDB capture files are processed.                     |
 | `--clickhouse-address`  | Address of the destination ClickHouse server, for example `localhost:9000`.                         |
