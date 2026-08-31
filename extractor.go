@@ -215,30 +215,22 @@ func (x *CaptureExtractor) constructFIEFromFIERow(h *fieHandle, row *fieRow) (*a
 	//
 	// pd.AgentID tells us which agent; the term tells us which IP that
 	// agent had at this point in time.
-	terms, ok := x.agentTermsMap[pd.AgentID]
-	if !ok {
-		return nil, fmt.Errorf("agent terms for agent %q not found", pd.AgentID)
-	}
-
-	var agentTerm *AgentTerm
-
-	for _, term := range terms {
-		if term == nil {
-			continue
+	var agentIP net.IP
+	if terms, ok := x.agentTermsMap[pd.AgentID]; ok {
+		for _, term := range terms {
+			if term == nil {
+				continue
+			}
+			if captureTime.Before(term.BeginningTime) {
+				continue
+			}
+			// Treat a zero EndTime as an open-ended term.
+			if !term.EndTime.IsZero() && !captureTime.Before(term.EndTime) {
+				continue
+			}
+			agentIP = term.AgentIP
+			break
 		}
-		if captureTime.Before(term.BeginningTime) {
-			continue
-		}
-		// Treat a zero EndTime as an open-ended term.
-		if !term.EndTime.IsZero() && !captureTime.Before(term.EndTime) {
-			continue
-		}
-		agentTerm = term
-		break
-	}
-
-	if agentTerm == nil {
-		return nil, fmt.Errorf("no agent term for agent %q at %s", pd.AgentID, captureTime)
 	}
 
 	fie := &api.ForwardingInfoElement{
@@ -248,7 +240,7 @@ func (x *CaptureExtractor) constructFIEFromFIERow(h *fieHandle, row *fieRow) (*a
 		ProbingDirectiveID:  uint64(row.probingDirectiveID),
 		IPVersion:           pd.IPVersion,
 		Protocol:            pd.Protocol,
-		SourceAddress:       agentTerm.AgentIP,
+		SourceAddress:       agentIP,
 		DestinationAddress:  pd.DestinationAddress,
 		ProductionTimestamp: productionTime,
 	}

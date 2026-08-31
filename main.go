@@ -105,6 +105,18 @@ func run() (retErr error) {
 	return nil
 }
 
+func printProgress(inserted uint64, started time.Time) {
+	elapsed := time.Since(started)
+	rate := float64(inserted) / elapsed.Seconds()
+
+	fmt.Printf(
+		"\rImported FIEs: %-12d | %8.0f FIE/s | elapsed: %s",
+		inserted,
+		rate,
+		elapsed.Round(time.Second),
+	)
+}
+
 func parseConfig() (*config, error) {
 	cfg := &config{}
 
@@ -407,6 +419,7 @@ INSERT INTO %s
 
 func insertFIEs(ctx context.Context, conn clickhouse.Conn, cfg *config, extractor *CaptureExtractor) (uint64, error) {
 	var inserted uint64
+	started := time.Now()
 
 	batch, err := newFIEBatch(ctx, conn, cfg)
 	if err != nil {
@@ -415,26 +428,22 @@ func insertFIEs(ctx context.Context, conn clickhouse.Conn, cfg *config, extracto
 	defer func() { _ = batch.Close() }()
 
 	batchCount := 0
-
 	for {
 		fie, err := extractor.Next()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				break
 			}
-
 			return inserted, err
 		}
 
 		sequenceNumber := extractor.EmittedCount() - 1
-
 		if err := appendFIE(batch, sequenceNumber, fie); err != nil {
 			return inserted, fmt.Errorf("append FIE %d: %w", sequenceNumber, err)
 		}
 
 		inserted++
 		batchCount++
-
 		if batchCount < fieBatchSize {
 			continue
 		}
@@ -442,12 +451,12 @@ func insertFIEs(ctx context.Context, conn clickhouse.Conn, cfg *config, extracto
 		if err := batch.Send(); err != nil {
 			return inserted, fmt.Errorf("send FIE batch: %w", err)
 		}
+		printProgress(inserted, started)
 
 		batch, err = newFIEBatch(ctx, conn, cfg)
 		if err != nil {
 			return inserted, err
 		}
-
 		batchCount = 0
 	}
 
@@ -457,6 +466,8 @@ func insertFIEs(ctx context.Context, conn clickhouse.Conn, cfg *config, extracto
 		}
 	}
 
+	printProgress(inserted, started)
+	fmt.Println()
 	return inserted, nil
 }
 
