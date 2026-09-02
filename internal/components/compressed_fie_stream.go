@@ -1,0 +1,142 @@
+package components
+
+import (
+	"database/sql"
+	"fmt"
+	"iter"
+	"path/filepath"
+	"sort"
+
+	"github.com/marcboeker/go-duckdb/v2"
+
+	"fie-importer/internal/api"
+)
+
+type CompressedFIEStream interface {
+	Events() iter.Seq2[*api.CompressedFIE, error]
+	Len() int
+}
+
+type compressedFIEStream struct {
+	files []string
+	len   int
+}
+
+var _ CompressedFIEStream = (*compressedFIEStream)(nil)
+
+func NewCompressedFIEStream(fiesDir string) (*compressedFIEStream, error) {
+	files, err := filepath.Glob(filepath.Join(fiesDir, "fies-*.duckdb"))
+	if err != nil {
+		return nil, fmt.Errorf("glob FIE files: %w", err)
+	}
+	sort.Strings(files)
+
+	total := 0
+
+	for _, filename := range files {
+		connector, err := duckdb.NewConnector(filename, nil)
+		if err != nil {
+			return nil, fmt.Errorf("open DuckDB connector %q: %w", filename, err)
+		}
+
+		db := sql.OpenDB(connector)
+
+		var count int
+		err = db.QueryRow(`SELECT count(*) FROM fies`).Scan(&count)
+
+		closeErr := db.Close()
+		connectorErr := connector.Close()
+
+		if err != nil {
+			return nil, fmt.Errorf("count FIEs in %q: %w", filename, err)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("close DuckDB %q: %w", filename, closeErr)
+		}
+		if connectorErr != nil {
+			return nil, fmt.Errorf("close DuckDB connector %q: %w", filename, connectorErr)
+		}
+
+		total += count
+	}
+
+	return &compressedFIEStream{
+		files: files,
+		len:   total,
+	}, nil
+}
+
+func (s *compressedFIEStream) Events() iter.Seq2[*api.CompressedFIE, error] {
+	return func(yield func(*api.CompressedFIE, error) bool) {
+		for _, filename := range s.files {
+			if !s.readFile(filename, yield) {
+				return
+			}
+		}
+	}
+}
+
+func (s *compressedFIEStream) Len() int {
+	return s.len
+}
+
+func (s *compressedFIEStream) readFile(filename string, yield func(*api.CompressedFIE, error) bool) bool {
+	connector, err := duckdb.NewConnector(filename, nil)
+	if err != nil {
+		yield(nil, fmt.Errorf("open DuckDB connector %q: %w", filename, err))
+		return false
+	}
+
+	db := sql.OpenDB(connector)
+
+	rows, err := db.Query(`
+		SELECT
+			probing_directive_id,
+			near_reply_address,
+			far_reply_address,
+			capture_second,
+			time_deltas
+		FROM fies
+	`)
+	if err != nil {
+		_ = db.Close()
+		_ = connector.Close()
+		yield(nil, fmt.Errorf("query FIE file %q: %w", filename, err))
+		return false
+	}
+
+	defer func() {
+		_ = rows.Close()
+		_ = db.Close()
+		_ = connector.Close()
+	}()
+
+	for rows.Next() {
+		var record api.CompressedFIE
+		if err := rows.Scan(
+			&record.ProbingDirectiveID,
+			&record.NearReplyAddress,
+			&record.FarReplyAddress,
+			&record.CaptureSecond,
+			&record.TimeDeltas,
+		); err != nil {
+			yield(nil, fmt.Errorf("scan FIE row from %q: %w", filename, err))
+			return false
+		}
+
+		if !yield(&record, nil) {
+			return false
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		yield(nil, fmt.Errorf("iterate FIE rows from %q: %w", filename, err))
+		return false
+	}
+
+	return true
+}
+
+func (s *compressedFIEStream) Close() error {
+	return nil
+}
