@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -33,7 +34,6 @@ func main() {
 
 func run() error { //nolint
 	cfg := parseConfig()
-
 	ctx := context.Background()
 
 	conn, err := openClickHouse(ctx, cfg)
@@ -57,12 +57,16 @@ func run() error { //nolint
 
 	pdsTable := importer.NewPDsTable(conn, cfg.name+"__pds", cfg.batchSize)
 	agentTermsTable := importer.NewAgentTermsTable(conn, cfg.name+"__agent_terms", cfg.batchSize)
-	fiesTable := importer.NewFIELiteTable(conn, cfg.name+"__fieslite", cfg.batchSize)
+	statusTable := importer.NewCurrentStatusTable(conn, cfg.name+"__current_status", cfg.batchSize)
+	fiesTable := importer.NewFIELiteTable(conn, cfg.name+"__fies_lite", cfg.batchSize)
 
 	if err := pdsTable.Create(ctx); err != nil {
 		return err
 	}
 	if err := agentTermsTable.Create(ctx); err != nil {
+		return err
+	}
+	if err := statusTable.Create(ctx); err != nil {
 		return err
 	}
 	if err := fiesTable.Create(ctx); err != nil {
@@ -99,6 +103,25 @@ func run() error { //nolint
 		return fmt.Errorf("flush agent terms: %w", err)
 	}
 
+	statuses, err := extractor.StatusEvents()
+	if err != nil {
+		return fmt.Errorf("get status events: %w", err)
+	}
+
+	for _, status := range statuses {
+		if err := statusTable.Insert(ctx, status); err != nil {
+			return fmt.Errorf("insert status event: %w", err)
+		}
+	}
+
+	if err := statusTable.Flush(); err != nil {
+		return fmt.Errorf("flush status events: %w", err)
+	}
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	var fieCount uint64
+
 	for {
 		fie, err := extractor.Next()
 		if errors.Is(err, io.EOF) {
@@ -110,6 +133,13 @@ func run() error { //nolint
 
 		if err := fiesTable.Insert(ctx, fie); err != nil {
 			return fmt.Errorf("insert FIE %d: %w", fie.SequenceNumber, err)
+		}
+
+		fieCount++
+		select {
+		case <-ticker.C:
+			fmt.Printf("Inserted total of %d FIEs\n", fieCount)
+		default:
 		}
 	}
 

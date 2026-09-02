@@ -201,13 +201,13 @@ var _ Table[*CurrentStatus] = (*CurrentStatusTable)(nil)
 func NewCurrentStatusTable(conn driver.Conn, tableName string, batchSize int) *CurrentStatusTable {
 	const ddl = `CREATE TABLE %s
 	(
-		event_time                         DateTime,
-		current_pd_count                   Int64,
-		cumulative_insertions              UInt64,
-		cumulative_issuances               UInt64,
-		cumulative_updates                 UInt64,
-		aggregate_requested_rate           Float64,
-		aggregate_period_between_issuances Float64,
+		event_time                          DateTime,
+		current_pd_count                    Int64,
+		cumulative_insertions               UInt64,
+		cumulative_issuances                UInt64,
+		cumulative_updates                  UInt64,
+		aggregate_requested_rate            Float64,
+		aggregate_period_between_issuances  Float64,
 		realized_issuance_rate              Float64,
 		realized_update_rate                Float64,
 		distinct_impacted_addrs             Int64,
@@ -223,10 +223,10 @@ func NewCurrentStatusTable(conn driver.Conn, tableName string, batchSize int) *C
 	ENGINE = MergeTree
 	ORDER BY event_time
 	`
-	appendFunc := func(f func(a ...any) error, status *CurrentStatus) error {
+	appendFunc := func(f func(...any) error, status *CurrentStatus) error {
 		return f(
 			status.EventTime,
-			status.CurrentPDCount,
+			int64(status.CurrentPDCount),
 			status.CumulativeInsertions,
 			status.CumulativeIssuances,
 			status.CumulativeUpdates,
@@ -234,14 +234,14 @@ func NewCurrentStatusTable(conn driver.Conn, tableName string, batchSize int) *C
 			status.AggregatePeriodBetweenIssuances,
 			status.RealizedIssuanceRate,
 			status.RealizedUpdateRate,
-			status.DistinctImpactedAddrs,
+			int64(status.DistinctImpactedAddrs),
 			status.PeriodMin,
 			status.PeriodMax,
-			status.PDsClampedAtMin,
-			status.PDsClampedAtMax,
-			status.PDsWithFullHistory,
-			status.UpdateChannelOccupancy,
-			status.InsertChannelOccupancy,
+			int64(status.PDsClampedAtMin),
+			int64(status.PDsClampedAtMax),
+			int64(status.PDsWithFullHistory),
+			int64(status.UpdateChannelOccupancy),
+			int64(status.InsertChannelOccupancy),
 			status.CumulativeLateOccurrences,
 		)
 	}

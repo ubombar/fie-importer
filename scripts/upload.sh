@@ -49,7 +49,7 @@ log "ClickHouse address: $CLICKHOUSE_ADDRESS"
 log "ClickHouse database: $CLICKHOUSE_DATABASE"
 log "Import name: $IMPORT_NAME"
 
-go run . \
+./fie-importer \
 	--events-dir "$EVENTS_DIR" \
 	--fies-dir "$FIES_DIR" \
 	--clickhouse-address "$CLICKHOUSE_ADDRESS" \

@@ -32,6 +32,7 @@ type CaptureExtractor struct {
 
 	agentTermsMap map[string][]*AgentTerm
 	pdMap         map[uint64]*api.ProbingDirective
+	statuses      []*CurrentStatus
 	fieHandles    []*fieHandle
 	fieIndex      int
 	nextSeq       uint64
@@ -46,6 +47,7 @@ func NewCaptureExtractor(cfg CaptureExtractorConfig) (*CaptureExtractor, error) 
 		cfg:           cfg,
 		agentTermsMap: make(map[string][]*AgentTerm),
 		pdMap:         make(map[uint64]*api.ProbingDirective),
+		statuses:      make([]*CurrentStatus, 0),
 		fieHandles:    make([]*fieHandle, 0),
 		fieIndex:      0,
 		nextSeq:       0,
@@ -83,6 +85,10 @@ func (x *CaptureExtractor) Load() (err error) {
 
 	if err := x.loadFIEHandles(); err != nil {
 		return fmt.Errorf("cannot load the FIE files: %w", err)
+	}
+
+	if err := x.loadStatusEvents(); err != nil {
+		return fmt.Errorf("cannot load status events: %w", err)
 	}
 
 	x.loaded = true
@@ -140,6 +146,17 @@ func (x *CaptureExtractor) AgentTerms() ([]*AgentTerm, error) {
 	}
 
 	return terms, nil
+}
+
+func (x *CaptureExtractor) StatusEvents() ([]*CurrentStatus, error) {
+	if !x.loaded {
+		return nil, fmt.Errorf("cannot get status events before loading")
+	}
+
+	statuses := make([]*CurrentStatus, 0, len(x.statuses))
+	statuses = append(statuses, x.statuses...)
+
+	return statuses, nil
 }
 
 // Next reads from the appropriate FIE rotation file and returns the constructed
@@ -293,6 +310,89 @@ func (x *CaptureExtractor) loadAgentTermsMap() error {
 
 	for _, term := range terms {
 		x.agentTermsMap[term.AgentID] = append(x.agentTermsMap[term.AgentID], term)
+	}
+
+	return nil
+}
+
+func (x *CaptureExtractor) loadStatusEvents() error {
+	files, err := filepath.Glob(filepath.Join(x.cfg.EventsDir, "events-*.jsonl"))
+	if err != nil {
+		return fmt.Errorf("glob event files: %w", err)
+	}
+	sort.Strings(files)
+
+	cmd := exec.Command("jq", "-c", `select(.type == "CurrentStatusEvent")`)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("create jq stdin pipe: %w", err)
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("create jq stdout pipe: %w", err)
+	}
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start jq: %w", err)
+	}
+
+	var g errgroup.Group
+
+	g.Go(func() error {
+		defer func() { _ = stdin.Close() }()
+
+		for _, filename := range files {
+			f, err := os.Open(filename) //nolint:gosec
+			if err != nil {
+				return fmt.Errorf("open %q: %w", filename, err)
+			}
+
+			_, copyErr := io.Copy(stdin, f)
+			closeErr := f.Close()
+
+			if copyErr != nil {
+				return fmt.Errorf("copy %q: %w", filename, copyErr)
+			}
+			if closeErr != nil {
+				return fmt.Errorf("close %q: %w", filename, closeErr)
+			}
+		}
+
+		return nil
+	})
+
+	g.Go(func() error {
+		scanner := bufio.NewScanner(stdout)
+		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+
+		for scanner.Scan() {
+			status := new(CurrentStatus)
+			if err := json.Unmarshal(scanner.Bytes(), status); err != nil {
+				return fmt.Errorf("decode current status: %w", err)
+			}
+
+			x.statuses = append(x.statuses, status)
+		}
+
+		if err := scanner.Err(); err != nil {
+			return fmt.Errorf("read jq output: %w", err)
+		}
+
+		return nil
+	})
+
+	if err := g.Wait(); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return err
+	}
+
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("jq failed: %w: %s", err, stderr.String())
 	}
 
 	return nil

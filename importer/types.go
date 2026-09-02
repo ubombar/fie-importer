@@ -42,7 +42,7 @@ type AgentTerm struct {
 // CurrentStatus is the exact copy of the current status event from
 // retina-orchestrator.
 type CurrentStatus struct {
-	EventTime                       time.Time `json:"capture_time"`
+	EventTime                       time.Time `json:"timestamp"`
 	CurrentPDCount                  int       `json:"current_pd_count"`
 	CumulativeInsertions            uint64    `json:"cumulative_insertions"`
 	CumulativeIssuances             uint64    `json:"cumulative_issuances"`
