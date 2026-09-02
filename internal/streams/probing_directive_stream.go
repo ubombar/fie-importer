@@ -24,6 +24,11 @@ func NewProbingDirectiveStream(raw RawEventStream) (*probingDirectiveStream, err
 		Type string `json:"type"`
 	}
 
+	type pdBulkInsertionEvent struct {
+		Type string                  `json:"type"`
+		PDs  []*api.ProbingDirective `json:"pds"`
+	}
+
 	s := &probingDirectiveStream{}
 
 	for data, err := range raw.Events() {
@@ -36,16 +41,16 @@ func NewProbingDirectiveStream(raw RawEventStream) (*probingDirectiveStream, err
 			return nil, fmt.Errorf("decode event envelope: %w", err)
 		}
 
-		if envelope.Type != "ProbingDirectiveEvent" {
+		if envelope.Type != "PDBulkInsertionEvent" {
 			continue
 		}
 
-		var pd api.ProbingDirective
-		if err := json.Unmarshal(data, &pd); err != nil {
-			return nil, fmt.Errorf("decode probing directive: %w", err)
+		var event pdBulkInsertionEvent
+		if err := json.Unmarshal(data, &event); err != nil {
+			return nil, fmt.Errorf("decode PD bulk insertion event: %w", err)
 		}
 
-		s.events = append(s.events, &pd)
+		s.events = append(s.events, event.PDs...)
 	}
 
 	return s, nil

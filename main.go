@@ -1,9 +1,10 @@
 package main
 
 import (
-	"fie-importer/internal/components"
-	"fie-importer/internal/streams"
 	"fmt"
+	"time"
+
+	"fie-importer/internal/streams"
 )
 
 func main() {
@@ -12,23 +13,43 @@ func main() {
 		panic(err)
 	}
 
-	history, err := components.NewAgentConnectionHistory(stream)
+	statusStream, err := streams.NewCurrentStatusStream(stream)
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Printf("raw events: %d\n", stream.Len())
-	fmt.Printf("agents: %d\n", history.Len())
+	for status, err := range statusStream.Events() {
+		if err != nil {
+			panic(err)
+		}
 
-	for event := range history.Events() {
-		fmt.Printf(
-			"agent=%s time=%s address=%v\n",
-			event.AgentID,
-			event.Time,
-			event.AgentAddress,
-		)
+		fmt.Printf("status time: %v\n", status.Timestamp)
 	}
+
+	fmt.Printf("raw events: %d %v\n", stream.Len(), time.Now())
+	fmt.Printf("current statuses: %d %v\n", statusStream.Len(), time.Now())
 }
+
+// func main() {
+// 	stream, err := streams.NewRawEventStream("../campaign4_snapshots/20260829_134155_s1/events/")
+// 	if err != nil {
+// 		panic(err)
+// 	}
+//
+// 	stream2, err := streams.NewProbingDirectiveStream(stream)
+// 	if err != nil {
+// 		panic(err)
+// 	}
+//
+// 	for _, err := range stream2.Events() {
+// 		if err != nil {
+// 			panic(err)
+// 		}
+// 	}
+// 	fmt.Printf("raw events: %d %v\n", stream.Len(), time.Now())
+// 	fmt.Printf("agents: %d %v\n", stream2.Len(), time.Now())
+//
+// }
 
 // func main() {
 // 	stream, err := components.NewCompressedFIEStream("./test_capture/fies/")
