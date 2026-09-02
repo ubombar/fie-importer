@@ -1,6 +1,7 @@
 package components
 
 import (
+	"encoding/json"
 	"fmt"
 	"iter"
 	"net"
@@ -13,6 +14,8 @@ import (
 type AgentConnectionHistory interface {
 	Events() iter.Seq[*api.AgentConnectionEvent]
 	AddressAt(agentID string, t time.Time) (net.IP, bool, error)
+	AgentIDs() []string
+	Len() int
 }
 
 type agentConnectionHistory struct {
@@ -22,10 +25,80 @@ type agentConnectionHistory struct {
 
 var _ AgentConnectionHistory = (*agentConnectionHistory)(nil)
 
-func NewAgentConnectionHistory(events []*api.AgentConnectionEvent) AgentConnectionHistory {
+func NewAgentConnectionHistory(stream RawEventStream) (*agentConnectionHistory, error) {
+	type retinaBaseEvent struct {
+		Type      string    `json:"type"`
+		Timestamp time.Time `json:"timestamp"`
+	}
+
+	type agentConnectedEvent struct {
+		retinaBaseEvent
+		AgentID       string `json:"agent_id"`
+		RemoteAddress string `json:"remote_address"`
+	}
+
+	type agentDisconnectedEvent struct {
+		retinaBaseEvent
+		AgentID       string `json:"agent_id"`
+		RemoteAddress string `json:"remote_address"`
+	}
+
 	h := &agentConnectionHistory{
 		eventsByAgent: make(map[string][]*api.AgentConnectionEvent),
-		events:        append([]*api.AgentConnectionEvent(nil), events...),
+	}
+
+	for raw, err := range stream.Events() {
+		if err != nil {
+			return nil, err
+		}
+
+		var base retinaBaseEvent
+		if err := json.Unmarshal(raw, &base); err != nil {
+			return nil, fmt.Errorf("decode event envelope: %w", err)
+		}
+
+		var event *api.AgentConnectionEvent
+
+		switch base.Type {
+		case "AgentConnectedEvent":
+			var connected agentConnectedEvent
+			if err := json.Unmarshal(raw, &connected); err != nil {
+				return nil, fmt.Errorf("decode agent connected event: %w", err)
+			}
+
+			host, _, err := net.SplitHostPort(connected.RemoteAddress)
+			if err != nil {
+				host = connected.RemoteAddress
+			}
+
+			ip := net.ParseIP(host)
+			if ip == nil {
+				return nil, fmt.Errorf("invalid agent address %q", connected.RemoteAddress)
+			}
+
+			event = &api.AgentConnectionEvent{
+				AgentID:      connected.AgentID,
+				Time:         connected.Timestamp,
+				AgentAddress: ip,
+			}
+
+		case "AgentDisconnectedEvent":
+			var disconnected agentDisconnectedEvent
+			if err := json.Unmarshal(raw, &disconnected); err != nil {
+				return nil, fmt.Errorf("decode agent disconnected event: %w", err)
+			}
+
+			event = &api.AgentConnectionEvent{
+				AgentID:      disconnected.AgentID,
+				Time:         disconnected.Timestamp,
+				AgentAddress: nil,
+			}
+
+		default:
+			continue
+		}
+
+		h.events = append(h.events, event)
 	}
 
 	sort.Slice(h.events, func(i, j int) bool {
@@ -36,7 +109,7 @@ func NewAgentConnectionHistory(events []*api.AgentConnectionEvent) AgentConnecti
 		h.eventsByAgent[event.AgentID] = append(h.eventsByAgent[event.AgentID], event)
 	}
 
-	return h
+	return h, nil
 }
 
 func (h *agentConnectionHistory) Events() iter.Seq[*api.AgentConnectionEvent] {
@@ -76,4 +149,17 @@ func (h *agentConnectionHistory) AddressAt(agentID string, t time.Time) (net.IP,
 	}
 
 	return event.AgentAddress, false, nil
+}
+
+func (h *agentConnectionHistory) Len() int {
+	return len(h.eventsByAgent)
+}
+
+func (h *agentConnectionHistory) AgentIDs() []string {
+	ids := make([]string, 0, len(h.eventsByAgent))
+	for agentID := range h.eventsByAgent {
+		ids = append(ids, agentID)
+	}
+	sort.Strings(ids)
+	return ids
 }

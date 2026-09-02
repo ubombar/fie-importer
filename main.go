@@ -11,15 +11,22 @@ func main() {
 		panic(err)
 	}
 
-	for line, err := range stream.Events() {
-		if err != nil {
-			panic(err)
-		}
-		fmt.Printf("len(line): %v\n", len(line))
+	history, err := components.NewAgentConnectionHistory(stream)
+	if err != nil {
+		panic(err)
 	}
 
-	fmt.Printf("stream.Len(): %v\n", stream.Len())
+	fmt.Printf("raw events: %d\n", stream.Len())
+	fmt.Printf("agents: %d\n", history.Len())
 
+	for event := range history.Events() {
+		fmt.Printf(
+			"agent=%s time=%s address=%v\n",
+			event.AgentID,
+			event.Time,
+			event.AgentAddress,
+		)
+	}
 }
 
 // func main() {
