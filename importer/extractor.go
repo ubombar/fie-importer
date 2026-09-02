@@ -1,4 +1,4 @@
-package main
+package importer
 
 import (
 	"bufio"
@@ -21,17 +21,6 @@ import (
 	"github.com/marcboeker/go-duckdb/v2"
 	"golang.org/x/sync/errgroup"
 )
-
-// AgentTerm represents a time period an agent is connected and active.
-// The BeginningTime should always be valid, EndTime can be zero, that means we
-// do not know if the aget is disconnected.
-type AgentTerm struct {
-	BeginningTime time.Time
-	EndTime       time.Time
-	AgentID       string
-	AgentIP       net.IP
-	AgentPort     int
-}
 
 type CaptureExtractorConfig struct {
 	EventsDir string `json:"events_dir"`
@@ -155,37 +144,46 @@ func (x *CaptureExtractor) AgentTerms() ([]*AgentTerm, error) {
 
 // Next reads from the appropriate FIE rotation file and returns the constructed
 // FIE.
-func (x *CaptureExtractor) Next() (*api.ForwardingInfoElement, error) {
+func (x *CaptureExtractor) Next() (*ExtendedFIE, error) {
 	if !x.loaded {
 		return nil, fmt.Errorf("cannot read before loading")
 	}
+
 	for {
 		if x.fieIndex >= len(x.fieHandles) {
 			return nil, io.EOF
 		}
+
 		fieHandle := x.fieHandles[x.fieIndex]
+
 		fieRow, err := fieHandle.Next()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				if err := fieHandle.Close(); err != nil {
 					return nil, fmt.Errorf("close FIE handle %q: %w", fieHandle.pathName, err)
 				}
+
 				x.fieIndex++
 				continue
 			}
+
 			return nil, fmt.Errorf("read FIE from %q: %w", fieHandle.pathName, err)
 		}
+
 		fie, err := x.constructFIEFromFIERow(fieHandle, fieRow)
 		if err != nil {
 			return nil, fmt.Errorf("construct FIE from %q: %w", fieHandle.pathName, err)
 		}
+
+		fie.SequenceNumber = x.nextSeq
 		x.nextSeq++
+
 		return fie, nil
 	}
 }
 
 //nolint:funlen,gocyclo
-func (x *CaptureExtractor) constructFIEFromFIERow(h *fieHandle, row *fieRow) (*api.ForwardingInfoElement, error) {
+func (x *CaptureExtractor) constructFIEFromFIERow(h *fieHandle, row *capturerFIERecord) (*ExtendedFIE, error) {
 	pd, ok := x.pdMap[uint64(row.probingDirectiveID)]
 	if !ok {
 		return nil, fmt.Errorf("probing directive %d not found", row.probingDirectiveID)
@@ -265,7 +263,10 @@ func (x *CaptureExtractor) constructFIEFromFIERow(h *fieHandle, row *fieRow) (*a
 		}
 	}
 
-	return fie, nil
+	return &ExtendedFIE{
+		ForwardingInfoElement: *fie,
+		CaptureTime:           captureTime,
+	}, nil
 }
 
 func (x *CaptureExtractor) loadPDMap() error {
@@ -378,7 +379,7 @@ func NewFIEHandle(pathName string) (*fieHandle, error) {
 	}, nil
 }
 
-func (f *fieHandle) Next() (*fieRow, error) {
+func (f *fieHandle) Next() (*capturerFIERecord, error) {
 	if f.rows == nil {
 		const query = `
 			SELECT
@@ -404,7 +405,7 @@ func (f *fieHandle) Next() (*fieRow, error) {
 		return nil, io.EOF
 	}
 
-	var row fieRow
+	var row capturerFIERecord
 	if err := f.rows.Scan(
 		&row.probingDirectiveID,
 		&row.nearReplyAddress,
@@ -443,14 +444,6 @@ func (f *fieHandle) Close() error {
 	}
 
 	return firstErr
-}
-
-type fieRow struct {
-	probingDirectiveID uint32
-	nearReplyAddress   []byte
-	farReplyAddress    []byte
-	captureSecond      uint16
-	timeDeltas         uint32
 }
 
 func loadPDs(eventsDir string) ([]*api.ProbingDirective, error) {
