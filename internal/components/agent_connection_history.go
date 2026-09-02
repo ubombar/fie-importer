@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"fie-importer/internal/api"
+	"fie-importer/internal/streams"
 )
 
 type AgentConnectionHistory interface {
@@ -25,7 +26,7 @@ type agentConnectionHistory struct {
 
 var _ AgentConnectionHistory = (*agentConnectionHistory)(nil)
 
-func NewAgentConnectionHistory(stream RawEventStream) (*agentConnectionHistory, error) {
+func NewAgentConnectionHistory(stream streams.RawEventStream) (*agentConnectionHistory, error) {
 	type retinaBaseEvent struct {
 		Type      string    `json:"type"`
 		Timestamp time.Time `json:"timestamp"`

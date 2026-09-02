@@ -2,11 +2,12 @@ package main
 
 import (
 	"fie-importer/internal/components"
+	"fie-importer/internal/streams"
 	"fmt"
 )
 
 func main() {
-	stream, err := components.NewRawEventStream("../campaign4_snapshots/20260829_134155_s1/events/")
+	stream, err := streams.NewRawEventStream("../campaign4_snapshots/20260829_134155_s1/events/")
 	if err != nil {
 		panic(err)
 	}
