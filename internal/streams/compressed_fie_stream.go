@@ -6,6 +6,8 @@ import (
 	"iter"
 	"path/filepath"
 	"sort"
+	"strings"
+	"time"
 
 	"github.com/marcboeker/go-duckdb/v2"
 
@@ -81,6 +83,12 @@ func (s *compressedFIEStream) Len() int {
 }
 
 func (s *compressedFIEStream) readFile(filename string, yield func(*api.CompressedFIE, error) bool) bool {
+	baseTime, err := parseFIEBaseTime(filename)
+	if err != nil {
+		yield(nil, err)
+		return false
+	}
+
 	connector, err := duckdb.NewConnector(filename, nil)
 	if err != nil {
 		yield(nil, fmt.Errorf("open DuckDB connector %q: %w", filename, err))
@@ -124,6 +132,8 @@ func (s *compressedFIEStream) readFile(filename string, yield func(*api.Compress
 			return false
 		}
 
+		record.CaptureBaseTime = baseTime
+
 		if !yield(&record, nil) {
 			return false
 		}
@@ -139,4 +149,24 @@ func (s *compressedFIEStream) readFile(filename string, yield func(*api.Compress
 
 func (s *compressedFIEStream) Close() error {
 	return nil
+}
+
+func parseFIEBaseTime(filename string) (time.Time, error) {
+	name := filepath.Base(filename)
+
+	const prefix = "fies-"
+	const suffix = ".duckdb"
+
+	if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, suffix) {
+		return time.Time{}, fmt.Errorf("invalid FIE filename %q", name)
+	}
+
+	timestamp := strings.TrimSuffix(strings.TrimPrefix(name, prefix), suffix)
+
+	t, err := time.Parse("20060102T150405Z", timestamp)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse FIE timestamp from %q: %w", name, err)
+	}
+
+	return t.UTC(), nil
 }

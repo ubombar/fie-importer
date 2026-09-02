@@ -3,6 +3,8 @@ package api
 import (
 	"net"
 	"time"
+
+	"github.com/dioptra-io/retina-commons/api/v1"
 )
 
 const MissingTimestampAge uint8 = 63
@@ -35,9 +37,17 @@ type CurrentStatusEvent struct {
 }
 
 type CompressedFIE struct {
-	ProbingDirectiveID uint32 `json:"probing_directive_id"`
-	NearReplyAddress   []byte `json:"near_reply_address"`
-	FarReplyAddress    []byte `json:"far_reply_address"`
-	CaptureSecond      uint16 `json:"capture_second"`
-	TimeDeltas         uint32 `json:"time_deltas"`
+	ProbingDirectiveID uint32    `json:"probing_directive_id"`
+	NearReplyAddress   []byte    `json:"near_reply_address"`
+	FarReplyAddress    []byte    `json:"far_reply_address"`
+	CaptureSecond      uint16    `json:"capture_second"`
+	TimeDeltas         uint32    `json:"time_deltas"`
+	CaptureBaseTime    time.Time `json:"-"`
+}
+
+type FullFIE struct {
+	api.ForwardingInfoElement
+
+	SequenceNumber uint64    `json:"sequence_number"`
+	CaptureTime    time.Time `json:"capture_time"`
 }

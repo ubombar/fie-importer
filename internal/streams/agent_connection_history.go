@@ -1,4 +1,4 @@
-package components
+package streams
 
 import (
 	"encoding/json"
@@ -9,24 +9,23 @@ import (
 	"time"
 
 	"fie-importer/internal/api"
-	"fie-importer/internal/streams"
 )
 
-type AgentConnectionHistory interface {
+type AgentConnectionStream interface {
 	Events() iter.Seq[*api.AgentConnectionEvent]
 	AddressAt(agentID string, t time.Time) (net.IP, bool, error)
 	AgentIDs() []string
 	Len() int
 }
 
-type agentConnectionHistory struct {
+type agentConnectionStream struct {
 	eventsByAgent map[string][]*api.AgentConnectionEvent
 	events        []*api.AgentConnectionEvent
 }
 
-var _ AgentConnectionHistory = (*agentConnectionHistory)(nil)
+var _ AgentConnectionStream = (*agentConnectionStream)(nil)
 
-func NewAgentConnectionHistory(stream streams.RawEventStream) (*agentConnectionHistory, error) {
+func NewAgentConnectionStream(stream RawEventStream) (*agentConnectionStream, error) {
 	type retinaBaseEvent struct {
 		Type      string    `json:"type"`
 		Timestamp time.Time `json:"timestamp"`
@@ -44,7 +43,7 @@ func NewAgentConnectionHistory(stream streams.RawEventStream) (*agentConnectionH
 		RemoteAddress string `json:"remote_address"`
 	}
 
-	h := &agentConnectionHistory{
+	h := &agentConnectionStream{
 		eventsByAgent: make(map[string][]*api.AgentConnectionEvent),
 	}
 
@@ -113,7 +112,7 @@ func NewAgentConnectionHistory(stream streams.RawEventStream) (*agentConnectionH
 	return h, nil
 }
 
-func (h *agentConnectionHistory) Events() iter.Seq[*api.AgentConnectionEvent] {
+func (h *agentConnectionStream) Events() iter.Seq[*api.AgentConnectionEvent] {
 	return func(yield func(*api.AgentConnectionEvent) bool) {
 		for _, event := range h.events {
 			if !yield(event) {
@@ -123,7 +122,7 @@ func (h *agentConnectionHistory) Events() iter.Seq[*api.AgentConnectionEvent] {
 	}
 }
 
-func (h *agentConnectionHistory) AddressAt(agentID string, t time.Time) (net.IP, bool, error) {
+func (h *agentConnectionStream) AddressAt(agentID string, t time.Time) (net.IP, bool, error) {
 	events, ok := h.eventsByAgent[agentID]
 	if !ok || len(events) == 0 {
 		return nil, false, fmt.Errorf("no connection events for agent %q", agentID)
@@ -152,11 +151,11 @@ func (h *agentConnectionHistory) AddressAt(agentID string, t time.Time) (net.IP,
 	return event.AgentAddress, false, nil
 }
 
-func (h *agentConnectionHistory) Len() int {
+func (h *agentConnectionStream) Len() int {
 	return len(h.eventsByAgent)
 }
 
-func (h *agentConnectionHistory) AgentIDs() []string {
+func (h *agentConnectionStream) AgentIDs() []string {
 	ids := make([]string, 0, len(h.eventsByAgent))
 	for agentID := range h.eventsByAgent {
 		ids = append(ids, agentID)
