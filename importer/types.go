@@ -7,7 +7,7 @@ import (
 	api "github.com/dioptra-io/retina-commons/api/v1"
 )
 
-const missingTimestampAge uint8 = 63
+const MissingTimestampAge uint8 = 63
 
 // ExtendedFIE augments a ForwardingInfoElement with metadata
 // reconstructed by the capture extractor.
@@ -32,11 +32,11 @@ type ExtendedPD struct {
 // disconnection time is unknown or the agent was still connected when the
 // captured event history ended.
 type AgentTerm struct {
-	BeginningTime time.Time
-	EndTime       time.Time
-	AgentID       string
-	AgentIP       net.IP
-	AgentPort     int
+	BeginningTime time.Time  `json:"beginning_time"`
+	EndTime       *time.Time `json:"end_time"`
+	AgentID       string     `json:"agent_id"`
+	AgentIP       net.IP     `json:"agent_ip"`
+	AgentPort     int        `json:"agent_port"`
 }
 
 // CurrentStatus is the exact copy of the current status event from

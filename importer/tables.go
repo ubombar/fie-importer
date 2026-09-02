@@ -17,8 +17,7 @@ type PDsTable struct {
 var _ Table[*ExtendedPD] = (*PDsTable)(nil)
 
 func NewPDsTable(conn driver.Conn, tableName string, batchSize int) *PDsTable {
-	ddl := `
-	CREATE TABLE %s
+	ddl := `CREATE TABLE %s
 	(
 		probing_directive_id UInt64,
 		agent_id             LowCardinality(String),
@@ -40,7 +39,7 @@ func NewPDsTable(conn driver.Conn, tableName string, batchSize int) *PDsTable {
 			pd.NearTTL,
 		)
 	}
-	return &PDsTable{baseTable: newBaseTable(conn, tableName, ddl, batchSize, false, false, appendFunc)}
+	return &PDsTable{baseTable: newBaseTable(conn, tableName, ddl, batchSize, appendFunc)}
 }
 
 // ========================================================================== //
@@ -54,8 +53,7 @@ type FIELiteTable struct {
 var _ Table[*ExtendedFIE] = (*FIELiteTable)(nil)
 
 func NewFIELiteTable(conn driver.Conn, tableName string, batchSize int) *FIELiteTable { //nolint:funlen
-	const ddl = `
-	CREATE TABLE %s
+	const ddl = `CREATE TABLE %s
 	(
 		-- Identification columns
 		probing_directive_id UInt64,
@@ -89,11 +87,11 @@ func NewFIELiteTable(conn driver.Conn, tableName string, batchSize int) *FIELite
 		far_received_timestamp Nullable(DateTime) ALIAS 
 			if(far_received_age = 63, NULL, subtractSeconds(capture_timestamp, far_received_age)),
 		production_timestamp Nullable(DateTime) ALIAS 
-			if(production_age = 63, NULL, subtractSeconds(capture_timestamp, production_age))
+			if(production_age = 63, NULL, subtractSeconds(capture_timestamp, production_age)),
 
 		-- Critical aliases.
 		far_probe_ttl Nullable(UInt8) ALIAS 
-			if(isNull(near_probe_ttl), NULL, near_probe_ttl + 1),
+			if(isNull(near_probe_ttl), NULL, near_probe_ttl + 1)
 	)
 	ENGINE = MergeTree
 	ORDER BY
@@ -149,7 +147,7 @@ func NewFIELiteTable(conn driver.Conn, tableName string, batchSize int) *FIELite
 			timestampAge(fie.CaptureTime, fie.ProductionTimestamp),
 		)
 	}
-	return &FIELiteTable{baseTable: newBaseTable(conn, tableName, ddl, batchSize, false, false, appendFunc)}
+	return &FIELiteTable{baseTable: newBaseTable(conn, tableName, ddl, batchSize, appendFunc)}
 }
 
 // ========================================================================== //
@@ -163,14 +161,13 @@ type AgentTermsTable struct {
 var _ Table[*AgentTerm] = (*AgentTermsTable)(nil)
 
 func NewAgentTermsTable(conn driver.Conn, tableName string, batchSize int) *AgentTermsTable {
-	const ddl = `
-	CREATE TABLE %s
+	const ddl = `CREATE TABLE %s
 	(
 		agent_id       LowCardinality(String),
 		agent_ip       IPv6,
 		agent_port     UInt16,
 		beginning_time DateTime64(9, 'UTC'),
-		end_time       DateTime64(9, 'UTC')
+		end_time       Nullable(DateTime64(9, 'UTC'))
 	)
 	ENGINE = MergeTree
 	ORDER BY
@@ -188,7 +185,7 @@ func NewAgentTermsTable(conn driver.Conn, tableName string, batchSize int) *Agen
 			term.EndTime,
 		)
 	}
-	return &AgentTermsTable{baseTable: newBaseTable(conn, tableName, ddl, batchSize, false, false, appendFunc)}
+	return &AgentTermsTable{baseTable: newBaseTable(conn, tableName, ddl, batchSize, appendFunc)}
 }
 
 // ========================================================================== //
@@ -202,8 +199,7 @@ type CurrentStatusTable struct {
 var _ Table[*CurrentStatus] = (*CurrentStatusTable)(nil)
 
 func NewCurrentStatusTable(conn driver.Conn, tableName string, batchSize int) *CurrentStatusTable {
-	const ddl = `
-	CREATE TABLE %s
+	const ddl = `CREATE TABLE %s
 	(
 		event_time                         DateTime,
 		current_pd_count                   Int64,
@@ -249,5 +245,5 @@ func NewCurrentStatusTable(conn driver.Conn, tableName string, batchSize int) *C
 			status.CumulativeLateOccurrences,
 		)
 	}
-	return &CurrentStatusTable{baseTable: newBaseTable(conn, tableName, ddl, batchSize, false, false, appendFunc)}
+	return &CurrentStatusTable{baseTable: newBaseTable(conn, tableName, ddl, batchSize, appendFunc)}
 }

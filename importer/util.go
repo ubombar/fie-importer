@@ -4,14 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"strings"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
 // ========================================================================== //
-// Base table implementaiton
+// baseTable
 // ========================================================================== //
 
 type appendFunc[T any] func(f func(a ...any) error, value T) error
@@ -22,9 +21,6 @@ type baseTable[T any] struct {
 	batchSize int
 	pending   int
 
-	createIfNotExists bool
-	dropIfExists      bool
-
 	conn   driver.Conn
 	batch  driver.Batch
 	append appendFunc[T]
@@ -32,25 +28,18 @@ type baseTable[T any] struct {
 
 var _ Table[any] = (*baseTable[any])(nil)
 
-func newBaseTable[T any](conn driver.Conn, tableName, ddl string, batchSize int, createIfNotExists, dropIfExists bool, appendFn appendFunc[T]) *baseTable[T] {
+func newBaseTable[T any](conn driver.Conn, tableName, ddl string, batchSize int, appendFn appendFunc[T]) *baseTable[T] {
 	return &baseTable[T]{
-		conn:              conn,
-		tableName:         tableName,
-		ddl:               ddl,
-		batchSize:         batchSize,
-		createIfNotExists: createIfNotExists,
-		dropIfExists:      dropIfExists,
-		append:            appendFn,
+		conn:      conn,
+		tableName: tableName,
+		ddl:       ddl,
+		batchSize: batchSize,
+		append:    appendFn,
 	}
 }
 
 func (t *baseTable[T]) Create(ctx context.Context) error {
-	ddl := t.ddl
-	if t.createIfNotExists {
-		ddl = strings.Replace(ddl, "CREATE TABLE", "CREATE TABLE IF NOT EXISTS", 1)
-	}
-
-	if err := t.conn.Exec(ctx, fmt.Sprintf(ddl, fmt.Sprintf("`%s`", t.tableName))); err != nil {
+	if err := t.conn.Exec(ctx, fmt.Sprintf(t.ddl, fmt.Sprintf("`%s`", t.tableName))); err != nil {
 		return fmt.Errorf("create table %s: %w", t.tableName, err)
 	}
 	return nil
@@ -58,7 +47,7 @@ func (t *baseTable[T]) Create(ctx context.Context) error {
 
 func (t *baseTable[T]) Insert(ctx context.Context, value T) error {
 	if t.batch == nil {
-		batch, err := t.conn.PrepareBatch(ctx, "INSERT INTO "+t.tableName)
+		batch, err := t.conn.PrepareBatch(ctx, fmt.Sprintf("INSERT INTO `%s`", t.tableName))
 		if err != nil {
 			return fmt.Errorf("prepare batch: %w", err)
 		}
@@ -82,13 +71,7 @@ func (t *baseTable[T]) Drop(ctx context.Context) error {
 	if err := t.Flush(); err != nil {
 		return err
 	}
-
-	statement := "DROP TABLE `" + t.tableName + "`"
-	if t.dropIfExists {
-		statement = "DROP TABLE IF EXISTS `" + t.tableName + "`"
-	}
-
-	if err := t.conn.Exec(ctx, statement); err != nil {
+	if err := t.conn.Exec(ctx, fmt.Sprintf("DROP TABLE `%s`", t.tableName)); err != nil {
 		return fmt.Errorf("drop table %s: %w", t.tableName, err)
 	}
 	return nil
@@ -109,7 +92,7 @@ func (t *baseTable[T]) Flush() error {
 }
 
 // ========================================================================== //
-// Other utility funcitons
+// Other utility functions
 // ========================================================================== //
 
 func timestampAge(captureTime, timestamp time.Time) uint8 {

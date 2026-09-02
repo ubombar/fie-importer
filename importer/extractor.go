@@ -222,8 +222,8 @@ func (x *CaptureExtractor) constructFIEFromFIERow(h *fieHandle, row *capturerFIE
 			if captureTime.Before(term.BeginningTime) {
 				continue
 			}
-			// Treat a zero EndTime as an open-ended term.
-			if !term.EndTime.IsZero() && !captureTime.Before(term.EndTime) {
+			// A nil EndTime means the term is open-ended.
+			if term.EndTime != nil && !captureTime.Before(*term.EndTime) {
 				continue
 			}
 			agentIP = term.AgentIP
@@ -646,7 +646,7 @@ func loadAgentTerms(eventsDir string) ([]*AgentTerm, error) {
 					continue
 				}
 
-				term.EndTime = event.Timestamp
+				term.EndTime = &event.Timestamp
 				terms = append(terms, term)
 				delete(active, event.AgentID)
 			}
