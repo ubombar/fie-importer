@@ -46,6 +46,35 @@ func NewFullFIEStream(compressed CompressedFIEStream, pds ProbingDirectiveStream
 	return s, nil
 }
 
+func NewFullFIEStreamFromDirs(eventsDir, fiesDir string) (*fullFIEStream, error) {
+	rawEvents, err := NewRawEventStream(eventsDir)
+	if err != nil {
+		return nil, err
+	}
+
+	pds, err := NewProbingDirectiveStream(rawEvents)
+	if err != nil {
+		return nil, err
+	}
+
+	agents, err := NewAgentConnectionStream(rawEvents)
+	if err != nil {
+		return nil, err
+	}
+
+	compressed, err := NewCompressedFIEStream(fiesDir)
+	if err != nil {
+		return nil, err
+	}
+
+	full, err := NewFullFIEStream(compressed, pds, agents)
+	if err != nil {
+		return nil, err
+	}
+
+	return full, nil
+}
+
 func (s *fullFIEStream) Len() int {
 	return s.compressed.Len()
 }
