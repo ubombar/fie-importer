@@ -127,7 +127,7 @@ func newParquetCommand() *cobra.Command { //nolint
 							projectedSize = uint64(float64(size) * float64(total) / float64(ingested))
 						}
 
-						fmt.Fprintf(statusWriter, "\rtotal=%d ingested=%d since=%s ETA=%s completed=%.2f%% size=%s projected=%s", total, ingested, elapsed.Round(time.Second), eta.Round(time.Second), percentage, formatBytes(size), formatBytes(projectedSize)) //nolint
+						fmt.Fprintf(statusWriter, "\rtotal=%d ingested=%d since=%s ETA=%s completed=%.2f%% size=%s projected=%s\n", total, ingested, elapsed.Round(time.Second), eta.Round(time.Second), percentage, formatBytes(size), formatBytes(projectedSize)) //nolint
 
 					case <-done:
 						return nil
@@ -152,7 +152,7 @@ func newParquetCommand() *cobra.Command { //nolint
 
 	cmd.Flags().StringVar(&fiesDir, "fies-dir", "", "directory containing compressed FIE files")
 	cmd.Flags().StringVarP(&output, "output", "o", "", "output Parquet file, stdout if omitted")
-	cmd.Flags().IntVar(&batchSize, "batch-size", 100_000, "Parquet ingestion batch size")
+	cmd.Flags().IntVar(&batchSize, "batch-size", 2_000_000, "Parquet ingestion batch size") // >= 1M to allow billions of row groups.
 
 	_ = cmd.MarkFlagRequired("fies-dir")
 
