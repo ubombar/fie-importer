@@ -1,8 +1,9 @@
-.PHONY: build lint fmt tidy test cover clean help
+.PHONY: build install lint fmt tidy test cover clean help
 
 help:
 	@echo "Valid targets:"
 	@echo "  build       - Format, lint, generate docs, and build fie-importer binary"
+	@echo "  install     - Format, lint, generate docs, build and install fie-importer binary"
 	@echo "  lint        - Format code and run linters"
 	@echo "  fmt         - Format code"
 	@echo "  tidy        - Tidy go modules"
@@ -11,7 +12,10 @@ help:
 	@echo "  clean       - Remove built binaries and coverage files"
 
 build: lint
-	go build -o fie-importer ./cmd/main.go
+	go build -o fie-importer ./cmd/fie-importer/main.go
+
+install: lint
+	go install ./cmd/fie-importer
 
 lint: fmt
 	golangci-lint run
