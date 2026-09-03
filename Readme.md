@@ -1,236 +1,112 @@
 # fie-importer
 
-`fie-importer` is a small, single-purpose command-line utility for importing the artifacts of a completed Retina experiment into ClickHouse.
+`fie-importer` converts captured Retina FIE data into a compact Parquet representation.
 
-It combines two artifact sources:
+The Parquet output can either be written to a local file or streamed through stdout, allowing the output to be piped directly to another process or a remote machine over SSH.
 
-- the Retina events emitted during the experiment;
-- the FIEs captured by the Retina orchestrator.
+## Installation
 
-The importer creates three ClickHouse tables containing the Probing Directives, agent connection terms, and enriched FIEs, ready for subsequent analysis.
-
-## Usage
+Install the CLI with:
 
 ```bash
-fie-importer \
-    --events-dir ./captures/experiment \
-    --fies-dir ./captures/experiment \
-    --clickhouse-address localhost:9000 \
-    --clickhouse-database retina \
-    --name myexperiment
+go install ./cmd/fie-importer
 ```
 
-ClickHouse credentials are read from the environment:
+Make sure your Go binary directory is in your `PATH`:
 
 ```bash
-export CH_USER="default"
-export CH_PASSWORD="password"
+export PATH="$PATH:$(go env GOPATH)/bin"
 ```
 
-## Command-line arguments
-
-| Flag                    | Description                                                                                         |
-| ----------------------- | --------------------------------------------------------------------------------------------------- |
-| `--events-dir`          | Directory containing the Retina event captures. Only files matching `events-*.jsonl` are processed. |
-| `--fies-dir`            | Directory containing the FIE captures. Only DuckDB capture files are processed.                     |
-| `--clickhouse-address`  | Address of the destination ClickHouse server, for example `localhost:9000`.                         |
-| `--clickhouse-database` | ClickHouse database into which the tables are created.                                              |
-| `--name`                | Name identifying the experiment. Used to construct the destination table names.                     |
-
-`--events-dir` and `--fies-dir` may point to the same directory. Each input loader only considers files relevant to it.
-
-## Environment variables
-
-ClickHouse authentication is configured through:
-
-| Variable      | Description          |
-| ------------- | -------------------- |
-| `CH_USER`     | ClickHouse username. |
-| `CH_PASSWORD` | ClickHouse password. |
-
-Credentials are intentionally not passed as command-line arguments.
-
-## Input
-
-### Retina events
-
-`--events-dir` points to the directory containing events emitted by the Retina orchestrator.
-
-The importer only considers files matching:
-
-```text
-events-*.jsonl
-```
-
-For example:
-
-```text
-events-20260825T180000Z.jsonl
-events-20260826T000000Z.jsonl
-```
-
-The event stream provides the Probing Directives used during the experiment and the agent connection and disconnection events required to reconstruct agent terms.
-
-Agent terms are also used while reconstructing FIEs, including determining the source address associated with an agent at the time an FIE was captured.
-
-### FIE captures
-
-`--fies-dir` points to the directory containing the DuckDB FIE capture files produced by the Retina capturer.
-
-The importer discovers the DuckDB capture files in this directory and processes them in post-processing rather than connecting to a live Retina stream.
-
-## Output tables
-
-For an import using:
+Verify the installation:
 
 ```bash
---clickhouse-database retina
---name myexperiment
+fie-importer --help
 ```
 
-the importer creates:
+## Parquet Export
 
-```text
-retina.myexperiment__pds
-retina.myexperiment__agent_terms
-retina.myexperiment__fies
-```
-
-### `<name>__pds`
-
-The PD table contains the Probing Directives used by the experiment.
-
-```sql
-CREATE TABLE <database>.<name>__pds
-(
-    `probing_directive_id` UInt64,
-    `agent_id`             String,
-    `ip_version`           UInt8,
-    `protocol`             UInt8,
-    `destination_address`  IPv6,
-    `near_ttl`             UInt8,
-    `next_header_type`     Enum8(
-        'icmp'   = 1,
-        'icmpv6' = 2
-    ),
-    `first_half_word`      UInt16,
-    `second_half_word`     UInt16,
-    `event_timestamp`      DateTime64(9, 'UTC')
-)
-ENGINE = MergeTree
-ORDER BY
-(
-    destination_address,
-    agent_id,
-    probing_directive_id
-)
-SETTINGS
-    index_granularity = 8192;
-```
-
-### `<name>__agent_terms`
-
-The agent-term table contains the periods during which agents were connected and active during the experiment.
-
-Each term records the agent address and port observed when the agent connected, along with the beginning and end of that connection period.
-
-An `end_time` of `NULL` indicates that no corresponding disconnection event was observed before the event capture ended.
-
-```sql
-CREATE TABLE <database>.<name>__agent_terms
-(
-    `agent_id`       String,
-    `agent_ip`       IPv6,
-    `agent_port`     UInt16,
-    `beginning_time` DateTime64(9, 'UTC'),
-    `end_time`       Nullable(DateTime64(9, 'UTC'))
-)
-ENGINE = MergeTree
-ORDER BY
-(
-    agent_id,
-    beginning_time
-)
-SETTINGS
-    index_granularity = 8192;
-```
-
-### `<name>__fies`
-
-The FIE table contains the captured FIEs enriched with the information required for analysis.
-
-The global `sequence_number` is reconstructed from the preserved capture order of the DuckDB FIE records.
-
-```sql
-CREATE TABLE <database>.<name>__fies
-(
-    `sequence_number`         UInt64,
-    `agent_id`                String,
-    `probing_directive_id`    UInt64,
-    `ip_version`              UInt8,
-    `protocol`                UInt8,
-    `source_address`          IPv6,
-    `destination_address`     IPv6,
-    `near_probe_ttl`          UInt8,
-    `near_reply_address`      IPv6,
-    `near_sent_timestamp`     DateTime,
-    `near_received_timestamp` DateTime,
-    `far_probe_ttl`           UInt8,
-    `far_reply_address`       IPv6,
-    `far_sent_timestamp`      DateTime,
-    `far_received_timestamp`  DateTime,
-    `production_timestamp`    DateTime
-)
-ENGINE = MergeTree
-ORDER BY
-(
-    near_reply_address,
-    destination_address,
-    agent_id,
-    production_timestamp
-)
-SETTINGS
-    index_granularity = 8192;
-```
-
-## Example directory layout
-
-The FIE and event captures may share a directory:
-
-```text
-experiment/
-└── captures/
-    ├── events-20260825T180000Z.jsonl
-    ├── events-20260826T000000Z.jsonl
-    ├── fies-20260825T180000Z.duckdb
-    ├── fies-20260826T000000Z.duckdb
-    └── ...
-```
-
-The corresponding import is:
+The `parquet` command reads compressed FIE capture files and exports them as Parquet.
 
 ```bash
-export CH_USER="default"
-export CH_PASSWORD="password"
-
-fie-importer \
-    --events-dir ./experiment/captures \
-    --fies-dir ./experiment/captures \
-    --clickhouse-address localhost:9000 \
-    --clickhouse-database retina \
-    --name myexperiment
+fie-importer parquet --fies-dir <directory> [--output <file>] [--batch-size <rows>]
 ```
 
-This produces:
+### Options
 
 ```text
-retina.myexperiment__pds
-retina.myexperiment__agent_terms
-retina.myexperiment__fies
+--fies-dir     Directory containing compressed FIE files (required)
+-o, --output   Output Parquet file. If omitted, Parquet is written to stdout.
+--batch-size   Number of rows written per batch (default: 100000)
 ```
 
-## Scope
+Progress information is written to stderr and includes the number of ingested rows, elapsed time, ETA, completion percentage, current output size, and projected final size.
 
-`fie-importer` is deliberately a post-processing utility.
+## Write to a Local File
 
-It does not capture live FIEs, subscribe to the Retina event stream, or perform real-time ClickHouse ingestion. Its purpose is to take the artifacts of a completed Retina experiment, combine them into a consistent representation, and load that representation into ClickHouse for analysis.
+```bash
+fie-importer parquet \
+    --fies-dir ~/Documents/Repositories/campaign4_snapshots/20260829_134155_s1/fies \
+    --output 20260829_134155_s1.parquet
+```
+
+The output can also be redirected directly from stdout:
+
+```bash
+fie-importer parquet \
+    --fies-dir ~/Documents/Repositories/campaign4_snapshots/20260829_134155_s1/fies \
+    > 20260829_134155_s1.parquet
+```
+
+## Stream Directly to a Remote Machine
+
+Because Parquet is written to stdout when `--output` is omitted, the output can be streamed directly over SSH without creating a local Parquet file:
+
+```bash
+fie-importer parquet \
+    --fies-dir ~/Documents/Repositories/campaign4_snapshots/20260829_134155_s1/fies \
+    | ssh dev.lip6.fr 'cat > /storage/ufuk/campaign4/20260829_134155/20260829_134155_s1.parquet'
+```
+
+The data path is therefore:
+
+```text
+compressed FIE files
+        |
+        v
+   fie-importer
+        |
+        | Parquet / stdout
+        v
+       SSH
+        |
+        v
+remote Parquet file
+```
+
+Progress remains visible in the local terminal because status information is written to stderr while only the Parquet data is written to stdout.
+
+## Example Progress
+
+```text
+parquet export started with 20192898 FIEs total.
+total=20192898 ingested=10200000 since=5s ETA=5s completed=50.51% size=292.4 MiB projected=578.9 MiB
+```
+
+## Parquet Schema
+
+The compact Parquet representation contains:
+
+```go
+type ParquetLiteFIE struct {
+    SequenceNumber     uint64 `parquet:"sequence_number"`
+    ProbingDirectiveID uint32 `parquet:"probing_directive_id"`
+    NearReplyAddress   []byte `parquet:"near_reply_address,optional"`
+    FarReplyAddress    []byte `parquet:"far_reply_address,optional"`
+    CaptureTimestamp   uint32 `parquet:"capture_timestamp"`
+}
+```
+
+IPv4 addresses are stored using 4 bytes and IPv6 addresses using 16 bytes. Missing reply addresses are stored as null values.
+
+`capture_timestamp` is stored as Unix time in seconds.
