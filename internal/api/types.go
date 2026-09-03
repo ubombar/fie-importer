@@ -53,15 +53,10 @@ type FullFIE struct {
 	CaptureTime    time.Time `json:"capture_time"`
 }
 
-type LiteFIE struct {
-	ProbingDirectiveID uint64 `json:"probing_directive_id"`
-	SequenceNumber     uint64 `json:"sequence_number"`
-	// AgentID            string    `json:"agent_id"`
-	// Protocol           uint8     `json:"protocol"`
-	// SourceAddress      net.IP    `json:"source_address"`
-	DestinationAddress net.IP    `json:"destination_address"`
-	NearReplyAddress   net.IP    `json:"near_reply_address"`
-	FarReplyAddress    net.IP    `json:"far_reply_address"`
-	NearProbeTTL       *uint8    `json:"near_probe_ttl"`
-	CaptureTimestamp   time.Time `json:"capture_timestamp"`
+type ParquetLiteFIE struct {
+	SequenceNumber     uint64 `parquet:"sequence_number"`
+	ProbingDirectiveID uint32 `parquet:"probing_directive_id"`
+	NearReplyAddress   []byte `parquet:"near_reply_address,optional"`
+	FarReplyAddress    []byte `parquet:"far_reply_address,optional"`
+	CaptureTimestamp   uint32 `parquet:"capture_timestamp"`
 }

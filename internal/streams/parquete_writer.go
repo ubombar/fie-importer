@@ -1,0 +1,105 @@
+package streams
+
+import (
+	"fie-importer/internal/api"
+	"fmt"
+	"iter"
+	"net"
+	"os"
+	"sync/atomic"
+	"time"
+
+	"github.com/parquet-go/parquet-go"
+)
+
+type LiteFIEParquetIngester struct {
+	file      *os.File
+	writer    *parquet.GenericWriter[api.ParquetLiteFIE]
+	batchSize int
+	count     atomic.Uint64
+}
+
+func NewLiteFIEParquetIngester(filename string, batchSize int) (*LiteFIEParquetIngester, error) {
+	if batchSize <= 0 {
+		return nil, fmt.Errorf("batch size must be greater than 0, got %d", batchSize)
+	}
+
+	file, err := os.Create(filename) //nolint:gosec
+	if err != nil {
+		return nil, err
+	}
+
+	return &LiteFIEParquetIngester{
+		file:      file,
+		writer:    parquet.NewGenericWriter[api.ParquetLiteFIE](file),
+		batchSize: batchSize,
+	}, nil
+}
+
+func (w *LiteFIEParquetIngester) Count() uint64 {
+	return w.count.Load()
+}
+
+func (w *LiteFIEParquetIngester) Ingest(stream iter.Seq2[*api.CompressedFIE, error]) error {
+	rows := make([]api.ParquetLiteFIE, 0, w.batchSize)
+	compactIP := func(ip []byte) []byte {
+		v := net.IP(ip)
+
+		if v4 := v.To4(); v4 != nil {
+			return v4
+		}
+
+		if v6 := v.To16(); v6 != nil {
+			return v6
+		}
+
+		return nil
+	}
+
+	for fie, err := range stream {
+		if err != nil {
+			return err
+		}
+
+		rows = append(rows, api.ParquetLiteFIE{
+			SequenceNumber:     fie.SequenceNumber,
+			ProbingDirectiveID: fie.ProbingDirectiveID,
+			NearReplyAddress:   compactIP(fie.NearReplyAddress),
+			FarReplyAddress:    compactIP(fie.FarReplyAddress),
+			CaptureTimestamp:   uint32(fie.CaptureBaseTime.Add(time.Duration(fie.CaptureSecond) * time.Second).Unix()), //nolint:gosec
+		})
+
+		if len(rows) >= w.batchSize {
+			if err := w.write(rows); err != nil {
+				return err
+			}
+			rows = rows[:0]
+		}
+	}
+
+	if len(rows) > 0 {
+		if err := w.write(rows); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (w *LiteFIEParquetIngester) write(rows []api.ParquetLiteFIE) error {
+	n, err := w.writer.Write(rows)
+	if err != nil {
+		return err
+	}
+
+	w.count.Add(uint64(n)) //nolint
+	return nil
+}
+
+func (w *LiteFIEParquetIngester) Close() error {
+	if err := w.writer.Close(); err != nil {
+		_ = w.file.Close()
+		return err
+	}
+	return w.file.Close()
+}

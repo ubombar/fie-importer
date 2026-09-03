@@ -1,186 +1,109 @@
 package main
 
 import (
-	"context"
-	"errors"
-	"fie-importer/importer"
-	"flag"
+	"fie-importer/internal/streams"
 	"fmt"
-	"io"
-	"os"
+	"log"
 	"time"
 
-	"github.com/ClickHouse/clickhouse-go/v2"
-	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 )
 
-const defaultBatchSize = 100_000
-
-type config struct {
-	eventsDir          string
-	fiesDir            string
-	clickhouseAddress  string
-	clickhouseDatabase string
-	name               string
-	batchSize          int
-}
-
 func main() {
-	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+	rootCmd := &cobra.Command{
+		Use: "fie-importer",
+	}
+
+	rootCmd.AddCommand(newParquetCommand())
+
+	if err := rootCmd.Execute(); err != nil {
+		log.Fatal(err)
 	}
 }
 
-func run() error { //nolint
-	cfg := parseConfig()
-	ctx := context.Background()
+func newParquetCommand() *cobra.Command { //nolint
+	var (
+		fiesDir   string
+		output    string
+		batchSize int
+	)
 
-	conn, err := openClickHouse(ctx, cfg)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = conn.Close() }()
+	cmd := &cobra.Command{
+		Use:   "parquet",
+		Short: "Export compressed FIEs to Parquet",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			compressedFIEStream, err := streams.NewCompressedFIEStream(fiesDir)
+			if err != nil {
+				return err
+			}
 
-	extractor, err := importer.NewCaptureExtractor(importer.CaptureExtractorConfig{
-		EventsDir: cfg.eventsDir,
-		FIEsDir:   cfg.fiesDir,
-	})
-	if err != nil {
-		return fmt.Errorf("create capture extractor: %w", err)
-	}
-	defer func() { _ = extractor.Close() }()
+			ingester, err := streams.NewLiteFIEParquetIngester(output, batchSize)
+			if err != nil {
+				return err
+			}
+			defer ingester.Close() //nolint
 
-	if err := extractor.Load(); err != nil {
-		return fmt.Errorf("load capture: %w", err)
-	}
+			total := uint64(compressedFIEStream.Len()) //nolint
+			start := time.Now()
 
-	pdsTable := importer.NewPDsTable(conn, cfg.name+"__pds", cfg.batchSize)
-	agentTermsTable := importer.NewAgentTermsTable(conn, cfg.name+"__agent_terms", cfg.batchSize)
-	statusTable := importer.NewCurrentStatusTable(conn, cfg.name+"__current_status", cfg.batchSize)
-	fiesTable := importer.NewFIELiteTable(conn, cfg.name+"__fies_lite", cfg.batchSize)
+			fmt.Printf("parquet export started with %d FIEs total.\n", total)
 
-	if err := pdsTable.Create(ctx); err != nil {
-		return err
-	}
-	if err := agentTermsTable.Create(ctx); err != nil {
-		return err
-	}
-	if err := statusTable.Create(ctx); err != nil {
-		return err
-	}
-	if err := fiesTable.Create(ctx); err != nil {
-		return err
-	}
+			group, ctx := errgroup.WithContext(cmd.Context())
+			done := make(chan struct{})
 
-	pds, err := extractor.PDs()
-	if err != nil {
-		return fmt.Errorf("get PDs: %w", err)
-	}
+			group.Go(func() error {
+				defer close(done)
+				return ingester.Ingest(compressedFIEStream.Events())
+			})
 
-	for _, pd := range pds {
-		if err := pdsTable.Insert(ctx, &importer.ExtendedPD{ProbingDirective: *pd}); err != nil {
-			return fmt.Errorf("insert PD %d: %w", pd.ProbingDirectiveID, err)
-		}
-	}
+			group.Go(func() error {
+				ticker := time.NewTicker(time.Second)
+				defer ticker.Stop()
 
-	if err := pdsTable.Flush(); err != nil {
-		return fmt.Errorf("flush PDs: %w", err)
-	}
+				for {
+					select {
+					case <-ticker.C:
+						ingested := ingester.Count()
+						elapsed := time.Since(start)
 
-	terms, err := extractor.AgentTerms()
-	if err != nil {
-		return fmt.Errorf("get agent terms: %w", err)
-	}
+						var percentage float64
+						var eta time.Duration
 
-	for _, term := range terms {
-		if err := agentTermsTable.Insert(ctx, term); err != nil {
-			return fmt.Errorf("insert agent term %q: %w", term.AgentID, err)
-		}
-	}
+						if total > 0 {
+							percentage = float64(ingested) / float64(total) * 100
+						}
 
-	if err := agentTermsTable.Flush(); err != nil {
-		return fmt.Errorf("flush agent terms: %w", err)
-	}
+						if ingested > 0 && ingested < total {
+							rate := float64(ingested) / elapsed.Seconds()
+							eta = time.Duration(float64(total-ingested)/rate) * time.Second
+						}
 
-	statuses, err := extractor.StatusEvents()
-	if err != nil {
-		return fmt.Errorf("get status events: %w", err)
-	}
+						fmt.Printf("\rtotal=%d ingested=%d since=%s ETA=%s completed=%.2f%%", total, ingested, elapsed.Round(time.Second), eta.Round(time.Second), percentage)
 
-	for _, status := range statuses {
-		if err := statusTable.Insert(ctx, status); err != nil {
-			return fmt.Errorf("insert status event: %w", err)
-		}
-	}
+					case <-done:
+						return nil
 
-	if err := statusTable.Flush(); err != nil {
-		return fmt.Errorf("flush status events: %w", err)
-	}
+					case <-ctx.Done():
+						return nil
+					}
+				}
+			})
 
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	var fieCount uint64
+			if err := group.Wait(); err != nil {
+				return err
+			}
 
-	for {
-		fie, err := extractor.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("read FIE: %w", err)
-		}
+			fmt.Printf("\rtotal=%d ingested=%d since=%s ETA=0s completed=100.00%%\n", total, ingester.Count(), time.Since(start).Round(time.Second))
+			fmt.Printf("parquet export complete in %v\n", time.Since(start))
 
-		if err := fiesTable.Insert(ctx, fie); err != nil {
-			return fmt.Errorf("insert FIE %d: %w", fie.SequenceNumber, err)
-		}
-
-		fieCount++
-		select {
-		case <-ticker.C:
-			fmt.Printf("Inserted total of %d FIEs\n", fieCount)
-		default:
-		}
-	}
-
-	if err := fiesTable.Flush(); err != nil {
-		return fmt.Errorf("flush FIEs: %w", err)
-	}
-
-	return nil
-}
-
-func parseConfig() *config {
-	cfg := &config{}
-
-	flag.StringVar(&cfg.eventsDir, "events-dir", "", "directory containing event files")
-	flag.StringVar(&cfg.fiesDir, "fies-dir", "", "directory containing FIE capture files")
-	flag.StringVar(&cfg.clickhouseAddress, "clickhouse-address", "localhost:9000", "ClickHouse address")
-	flag.StringVar(&cfg.clickhouseDatabase, "clickhouse-database", "default", "ClickHouse database")
-	flag.StringVar(&cfg.name, "name", "", "import name used as table prefix")
-	flag.IntVar(&cfg.batchSize, "batch-size", defaultBatchSize, "ClickHouse insertion batch size")
-	flag.Parse()
-
-	return cfg
-}
-
-func openClickHouse(ctx context.Context, cfg *config) (driver.Conn, error) {
-	conn, err := clickhouse.Open(&clickhouse.Options{
-		Addr: []string{cfg.clickhouseAddress},
-		Auth: clickhouse.Auth{
-			Database: cfg.clickhouseDatabase,
-			Username: os.Getenv("CH_USER"),
-			Password: os.Getenv("CH_PASSWORD"),
+			return nil
 		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("open ClickHouse: %w", err)
 	}
 
-	if err := conn.Ping(ctx); err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("ping ClickHouse: %w", err)
-	}
+	cmd.Flags().StringVar(&fiesDir, "fies-dir", "./test_capture/fies/", "directory containing compressed FIE files")
+	cmd.Flags().StringVarP(&output, "output", "o", "test_fies_lite.parquet", "output Parquet file")
+	cmd.Flags().IntVar(&batchSize, "batch-size", 100_000, "Parquet ingestion batch size")
 
-	return conn, nil
+	return cmd
 }

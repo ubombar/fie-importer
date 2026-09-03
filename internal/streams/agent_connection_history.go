@@ -25,7 +25,7 @@ type agentConnectionStream struct {
 
 var _ AgentConnectionStream = (*agentConnectionStream)(nil)
 
-func NewAgentConnectionStream(stream RawEventStream) (*agentConnectionStream, error) {
+func NewAgentConnectionStream(stream RawEventStream) (*agentConnectionStream, error) { //nolint
 	type retinaBaseEvent struct {
 		Type      string    `json:"type"`
 		Timestamp time.Time `json:"timestamp"`

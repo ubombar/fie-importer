@@ -9,7 +9,7 @@ import (
 // NewClickHouseLiteFIEIngester creates a ClickHouseIngester with the type
 // api.FullFIE. It converts the FullFIE into a LiteFIE schema and ingests it to
 // Clickhouse.
-func NewClickHouseLiteFIEIngester(credentials ClickHouseCredentials, workers, bufferSize, batchSize int) (ClickHouseIngester[*api.FullFIE], error) {
+func NewClickHouseLiteFIEIngester(credentials ClickHouseCredentials, workers, bufferSize, batchSize int) (ClickHouseIngester[*api.FullFIE], error) { //nolint
 	liteFIEDDL := `
 CREATE TABLE %s
 (
@@ -67,14 +67,14 @@ SETTINGS index_granularity = 8192
 	})
 }
 
-func NewClickHouseLiteFIEIngester2(credentials ClickHouseCredentials, workers, bufferSize, batchSize int) (ClickHouseIngester[*api.CompressedFIE], error) {
+func NewClickHouseLiteFIEIngester2(credentials ClickHouseCredentials, workers, bufferSize, batchSize int) (ClickHouseIngester[*api.CompressedFIE], error) { //nolint
 	liteFIEDDL := `
 CREATE TABLE %s
 (
+	sequence_number      UInt32,
 	probing_directive_id UInt64,
-	sequence_number      UInt64,
-	near_reply_address   IPv6,
-	far_reply_address    IPv6,
+	near_reply_address   Nullable(IPv6),
+	far_reply_address    Nullable(IPv6),
 	capture_timestamp    DateTime
 )
 ENGINE = MergeTree
@@ -92,10 +92,10 @@ SETTINGS index_granularity = 8192
 		DDL:         liteFIEDDL,
 		Append: func(append ClickHouseAppender, fie *api.CompressedFIE) error {
 			return append(
-				uint64(fie.ProbingDirectiveID),
 				fie.SequenceNumber,
-				net.IP(fie.NearReplyAddress),
-				net.IP(fie.FarReplyAddress),
+				fie.ProbingDirectiveID,
+				net.IP(fie.NearReplyAddress).To16(),
+				net.IP(fie.FarReplyAddress).To16(),
 				fie.CaptureBaseTime.Add(time.Duration(fie.CaptureSecond)*time.Second),
 			)
 		},

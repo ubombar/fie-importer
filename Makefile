@@ -11,7 +11,7 @@ help:
 	@echo "  clean       - Remove built binaries and coverage files"
 
 build: lint
-	go build -o fie-importer .
+	go build -o fie-importer ./cmd/main.go
 
 lint: fmt
 	golangci-lint run
