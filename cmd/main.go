@@ -101,9 +101,12 @@ func newParquetCommand() *cobra.Command { //nolint
 		},
 	}
 
-	cmd.Flags().StringVar(&fiesDir, "fies-dir", "./test_capture/fies/", "directory containing compressed FIE files")
-	cmd.Flags().StringVarP(&output, "output", "o", "test_fies_lite.parquet", "output Parquet file")
+	cmd.Flags().StringVar(&fiesDir, "fies-dir", "", "directory containing compressed FIE files")
+	cmd.Flags().StringVarP(&output, "output", "o", "", "output Parquet file")
 	cmd.Flags().IntVar(&batchSize, "batch-size", 100_000, "Parquet ingestion batch size")
+
+	_ = cmd.MarkFlagRequired("fies-dir")
+	_ = cmd.MarkFlagRequired("output")
 
 	return cmd
 }
