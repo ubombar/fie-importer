@@ -3,19 +3,33 @@ package main
 import (
 	"fie-importer/internal/streams"
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 )
 
-func main() {
-	rootCmd := &cobra.Command{
-		Use: "fie-importer",
-	}
+type CountingWriter struct {
+	writer io.Writer
+	count  atomic.Uint64
+}
 
+func (w *CountingWriter) Write(p []byte) (int, error) {
+	n, err := w.writer.Write(p)
+	w.count.Add(uint64(n)) //nolint:gosec
+	return n, err
+}
+
+func (w *CountingWriter) Count() uint64 {
+	return w.count.Load()
+}
+
+func main() {
+	rootCmd := &cobra.Command{Use: "fie-importer"}
 	rootCmd.AddCommand(newParquetCommand())
 
 	if err := rootCmd.Execute(); err != nil {
@@ -47,29 +61,31 @@ func newParquetCommand() *cobra.Command { //nolint
 				if err != nil {
 					return err
 				}
-				defer outputFile.Close() //nolint
+				defer outputFile.Close() //nolint:errcheck
 				outputWriter = outputFile
 			}
 
-			ingester, err := streams.NewLiteFIEParquetIngester(outputWriter, batchSize)
+			countingWriter := &CountingWriter{writer: outputWriter}
+
+			ingester, err := streams.NewLiteFIEParquetIngester(countingWriter, batchSize)
 			if err != nil {
 				return err
 			}
-			defer ingester.Close() //nolint
+			defer ingester.Close() //nolint:errcheck
 
-			total := uint64(compressedFIEStream.Len()) //nolint
+			total := uint64(compressedFIEStream.Len()) //nolint:gosec
 			start := time.Now()
 			statusWriter := cmd.ErrOrStderr()
 
 			fmt.Fprintf(statusWriter, "parquet export started with %d FIEs total.\n", total) //nolint
 
-			formatBytes := func(n int64) string {
+			formatBytes := func(n uint64) string {
 				const unit = 1024
 				if n < unit {
 					return fmt.Sprintf("%d B", n)
 				}
 
-				div, exp := int64(unit), 0
+				div, exp := uint64(unit), 0
 				for n >= div*unit && exp < 5 {
 					div *= unit
 					exp++
@@ -95,11 +111,11 @@ func newParquetCommand() *cobra.Command { //nolint
 					case <-ticker.C:
 						ingested := ingester.Count()
 						elapsed := time.Since(start)
+						size := countingWriter.Count()
 
 						var percentage float64
 						var eta time.Duration
-						var fileSize int64
-						var projectedSize int64
+						var projectedSize uint64
 
 						if total > 0 {
 							percentage = float64(ingested) / float64(total) * 100
@@ -108,18 +124,10 @@ func newParquetCommand() *cobra.Command { //nolint
 						if ingested > 0 && ingested < total {
 							rate := float64(ingested) / elapsed.Seconds()
 							eta = time.Duration(float64(total-ingested)/rate) * time.Second
+							projectedSize = uint64(float64(size) * float64(total) / float64(ingested))
 						}
 
-						if output != "" {
-							if info, err := os.Stat(output); err == nil {
-								fileSize = info.Size()
-								if ingested > 0 {
-									projectedSize = int64(float64(fileSize) * float64(total) / float64(ingested))
-								}
-							}
-						}
-
-						fmt.Fprintf(statusWriter, "\rtotal=%d ingested=%d since=%s ETA=%s completed=%.2f%% size=%s projected=%s", total, ingested, elapsed.Round(time.Second), eta.Round(time.Second), percentage, formatBytes(fileSize), formatBytes(projectedSize)) //nolint
+						fmt.Fprintf(statusWriter, "\rtotal=%d ingested=%d since=%s ETA=%s completed=%.2f%% size=%s projected=%s", total, ingested, elapsed.Round(time.Second), eta.Round(time.Second), percentage, formatBytes(size), formatBytes(projectedSize)) //nolint
 
 					case <-done:
 						return nil
@@ -134,8 +142,9 @@ func newParquetCommand() *cobra.Command { //nolint
 				return err
 			}
 
-			fmt.Fprintf(statusWriter, "\rtotal=%d ingested=%d since=%s ETA=0s completed=100.00%%\n", total, ingester.Count(), time.Since(start).Round(time.Second)) //nolint
-			fmt.Fprintf(statusWriter, "parquet export complete in %v\n", time.Since(start))                                                                         //nolint
+			elapsed := time.Since(start)
+			fmt.Fprintf(statusWriter, "\rtotal=%d ingested=%d since=%s ETA=0s completed=100.00%% size=%s projected=%s\n", total, ingester.Count(), elapsed.Round(time.Second), formatBytes(countingWriter.Count()), formatBytes(countingWriter.Count())) //nolint
+			fmt.Fprintf(statusWriter, "parquet export complete in %v\n", elapsed)                                                                                                                                                                        //nolint
 
 			return nil
 		},
