@@ -3,13 +3,24 @@ package streams
 import (
 	"context"
 	"crypto/tls"
-	"fie-importer/internal/api"
 	"fmt"
+	"iter"
 	"regexp"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
+
+type ClickHouseIngester[T any] interface {
+	Create(ctx context.Context, name string) error
+	Drop(ctx context.Context, name string) error
+	Ingest(ctx context.Context, name string, stream iter.Seq2[T, error]) error
+	Close() error
+}
+
+type ClickHouseAppender func(values ...any) error
+
+type ClickHouseRowAppender[T any] func(append ClickHouseAppender, value T) error
 
 type ClickHouseCredentials struct {
 	Addresses []string
@@ -19,43 +30,43 @@ type ClickHouseCredentials struct {
 	Secure    bool
 }
 
-type ClickhouseStreamerConfig struct {
+type ClickHouseIngesterConfig[T any] struct {
 	Credentials ClickHouseCredentials
 	Workers     int
 	BufferSize  int
 	BatchSize   int
-	Stream      FullFIEStream
+	DDL         string
+	Append      ClickHouseRowAppender[T]
 }
 
-type ClikchouseStreamer struct {
+type clickHouseIngester[T any] struct {
 	conn driver.Conn
-
-	stream FullFIEStream
 
 	n         int
 	k         int
 	batchSize int
+	ddl       string
+	append    ClickHouseRowAppender[T]
 }
 
-func NewClickhouseStreamer(cfg ClickhouseStreamerConfig) (*ClikchouseStreamer, error) {
-	if cfg.Stream == nil {
-		return nil, fmt.Errorf("FullFIE stream cannot be nil")
-	}
-
+func NewClickHouseIngester[T any](cfg ClickHouseIngesterConfig[T]) (ClickHouseIngester[T], error) {
 	if cfg.Workers <= 0 {
 		return nil, fmt.Errorf("parallel workers must be at least 1")
 	}
-
 	if cfg.BufferSize < 0 {
 		return nil, fmt.Errorf("buffer size cannot be negative")
 	}
-
 	if cfg.BatchSize <= 0 {
 		return nil, fmt.Errorf("batch size must be at least 1")
 	}
-
 	if len(cfg.Credentials.Addresses) == 0 {
 		return nil, fmt.Errorf("at least one ClickHouse address is required")
+	}
+	if cfg.DDL == "" {
+		return nil, fmt.Errorf("DDL cannot be empty")
+	}
+	if cfg.Append == nil {
+		return nil, fmt.Errorf("append function cannot be nil")
 	}
 
 	options := &clickhouse.Options{
@@ -68,9 +79,7 @@ func NewClickhouseStreamer(cfg ClickhouseStreamerConfig) (*ClikchouseStreamer, e
 	}
 
 	if cfg.Credentials.Secure {
-		options.TLS = &tls.Config{
-			MinVersion: tls.VersionTLS12,
-		}
+		options.TLS = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
 
 	conn, err := clickhouse.Open(options)
@@ -78,92 +87,66 @@ func NewClickhouseStreamer(cfg ClickhouseStreamerConfig) (*ClikchouseStreamer, e
 		return nil, fmt.Errorf("open ClickHouse connection: %w", err)
 	}
 
-	return &ClikchouseStreamer{
+	return &clickHouseIngester[T]{
 		conn:      conn,
-		stream:    cfg.Stream,
 		n:         cfg.Workers,
 		k:         cfg.BufferSize,
 		batchSize: cfg.BatchSize,
+		ddl:       cfg.DDL,
+		append:    cfg.Append,
 	}, nil
 }
 
-// Close closes the ClickHouse connection pool.
-func (s *ClikchouseStreamer) Close() error {
-	if s == nil || s.conn == nil {
-		return nil
-	}
-
-	return s.conn.Close()
-}
-
-// Ping verifies that ClickHouse is reachable.
-func (s *ClikchouseStreamer) Ping(ctx context.Context) error {
-	if err := s.conn.Ping(ctx); err != nil {
-		return fmt.Errorf("ping ClickHouse: %w", err)
-	}
-
-	return nil
-}
-
-func (s *ClikchouseStreamer) Create(ctx context.Context, name string) error {
+func (s *clickHouseIngester[T]) Create(ctx context.Context, name string) error {
 	if err := validateClickHouseIdentifier(name); err != nil {
 		return err
 	}
-
-	ddl := `CREATE TABLE %s` // TODO: not implemented.
-
-	if err := s.conn.Exec(ctx, fmt.Sprintf(ddl, fmt.Sprintf("`%v`", name))); err != nil {
+	if err := s.conn.Exec(ctx, fmt.Sprintf(s.ddl, fmt.Sprintf("`%s`", name))); err != nil {
 		return fmt.Errorf("create ClickHouse table %q: %w", name, err)
 	}
-
 	return nil
 }
 
-func (s *ClikchouseStreamer) Drop(ctx context.Context, name string) error {
+func (s *clickHouseIngester[T]) Drop(ctx context.Context, name string) error {
 	if err := validateClickHouseIdentifier(name); err != nil {
 		return err
 	}
-
-	ddl := `DROP TABLE %s`
-
-	if err := s.conn.Exec(ctx, fmt.Sprintf(ddl, fmt.Sprintf("`%v`", name))); err != nil {
+	if err := s.conn.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS `%s`", name)); err != nil {
 		return fmt.Errorf("drop ClickHouse table %q: %w", name, err)
 	}
-
 	return nil
 }
 
-func (s *ClikchouseStreamer) Ingest(ctx context.Context, name string) error {
+func (s *clickHouseIngester[T]) Ingest(ctx context.Context, name string, stream iter.Seq2[T, error]) error {
 	if err := validateClickHouseIdentifier(name); err != nil {
 		return err
 	}
-
-	workers := make([]chWorkerHandle, s.n)
+	workers := make([]*clickhouseBatchWriter, s.n)
 	for i := range workers {
-		workers[i] = chWorkerHandle{
-			conn:      s.conn,
-			tableName: name,
-			batchSize: s.batchSize,
-			appendFIE: s.appendFullFIE,
-		}
+		workers[i] = newClickHouseBatchWriter(s.conn, name, s.batchSize)
 	}
-
-	if err := ParallelForEach2(ctx, s.n, s.k, s.stream.FIEs(), func(winfo WorkerInfo, fie *api.FullFIE, err error) error {
+	if err := ParallelForEach2(ctx, s.n, s.k, stream, func(winfo WorkerInfo, value T, err error) error {
 		if err != nil {
 			return err
 		}
-		return workers[winfo.Index()].Append(winfo.Context(), fie)
+
+		worker := workers[winfo.Index()]
+		return s.append(func(values ...any) error {
+			return worker.Append(winfo.Context(), values...)
+		}, value)
 	}); err != nil {
 		return fmt.Errorf("parallel ClickHouse ingestion: %w", err)
 	}
-
-	for i := range workers {
-		if err := workers[i].Flush(); err != nil {
+	for _, worker := range workers {
+		if err := worker.Flush(); err != nil {
 			return err
 		}
 	}
-
 	return nil
+}
+
+func (s *clickHouseIngester[T]) Close() error {
+	return s.conn.Close()
 }
 
 func validateClickHouseIdentifier(name string) error {
