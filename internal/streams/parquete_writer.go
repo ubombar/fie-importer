@@ -3,9 +3,9 @@ package streams
 import (
 	"fie-importer/internal/api"
 	"fmt"
+	"io"
 	"iter"
 	"net"
-	"os"
 	"sync/atomic"
 	"time"
 
@@ -13,25 +13,18 @@ import (
 )
 
 type LiteFIEParquetIngester struct {
-	file      *os.File
 	writer    *parquet.GenericWriter[api.ParquetLiteFIE]
 	batchSize int
 	count     atomic.Uint64
 }
 
-func NewLiteFIEParquetIngester(filename string, batchSize int) (*LiteFIEParquetIngester, error) {
+func NewLiteFIEParquetIngester(writer io.Writer, batchSize int) (*LiteFIEParquetIngester, error) {
 	if batchSize <= 0 {
 		return nil, fmt.Errorf("batch size must be greater than 0, got %d", batchSize)
 	}
 
-	file, err := os.Create(filename) //nolint:gosec
-	if err != nil {
-		return nil, err
-	}
-
 	return &LiteFIEParquetIngester{
-		file:      file,
-		writer:    parquet.NewGenericWriter[api.ParquetLiteFIE](file),
+		writer:    parquet.NewGenericWriter[api.ParquetLiteFIE](writer),
 		batchSize: batchSize,
 	}, nil
 }
@@ -92,14 +85,14 @@ func (w *LiteFIEParquetIngester) write(rows []api.ParquetLiteFIE) error {
 		return err
 	}
 
+	if err := w.writer.Flush(); err != nil {
+		return err
+	}
+
 	w.count.Add(uint64(n)) //nolint
 	return nil
 }
 
 func (w *LiteFIEParquetIngester) Close() error {
-	if err := w.writer.Close(); err != nil {
-		_ = w.file.Close()
-		return err
-	}
-	return w.file.Close()
+	return w.writer.Close()
 }
