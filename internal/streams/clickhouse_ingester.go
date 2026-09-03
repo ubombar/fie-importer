@@ -76,6 +76,8 @@ func NewClickHouseIngester[T any](cfg ClickHouseIngesterConfig[T]) (ClickHouseIn
 			Username: cfg.Credentials.Username,
 			Password: cfg.Credentials.Password,
 		},
+		MaxOpenConns: cfg.Workers + 2,
+		MaxIdleConns: cfg.Workers,
 	}
 
 	if cfg.Credentials.Secure {
@@ -101,6 +103,7 @@ func (s *clickHouseIngester[T]) Create(ctx context.Context, name string) error {
 	if err := validateClickHouseIdentifier(name); err != nil {
 		return err
 	}
+
 	if err := s.conn.Exec(ctx, fmt.Sprintf(s.ddl, fmt.Sprintf("`%s`", name))); err != nil {
 		return fmt.Errorf("create ClickHouse table %q: %w", name, err)
 	}
@@ -111,6 +114,7 @@ func (s *clickHouseIngester[T]) Drop(ctx context.Context, name string) error {
 	if err := validateClickHouseIdentifier(name); err != nil {
 		return err
 	}
+
 	if err := s.conn.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS `%s`", name)); err != nil {
 		return fmt.Errorf("drop ClickHouse table %q: %w", name, err)
 	}
@@ -121,25 +125,35 @@ func (s *clickHouseIngester[T]) Ingest(ctx context.Context, name string, stream 
 	if err := validateClickHouseIdentifier(name); err != nil {
 		return err
 	}
+
 	workers := make([]*clickhouseBatchWriter, s.n)
 	for i := range workers {
 		workers[i] = newClickHouseBatchWriter(s.conn, name, s.batchSize)
 	}
-	if err := ParallelForEach2(ctx, s.n, s.k, stream, func(winfo WorkerInfo, value T, err error) error {
-		if err != nil {
-			return err
+
+	parallelForEachFunc := func(winfo WorkerInfo, value T, streamErr error) error {
+		if streamErr != nil {
+			return fmt.Errorf("stream error: %w", streamErr)
 		}
 
 		worker := workers[winfo.Index()]
-		return s.append(func(values ...any) error {
-			return worker.Append(winfo.Context(), values...)
-		}, value)
-	}); err != nil {
+		rowAppenderFunc := func(values ...any) error {
+			return worker.Append(ctx, values...) // use the parent context.
+		}
+		if err := s.append(rowAppenderFunc, value); err != nil {
+			return fmt.Errorf("append error: %w", err)
+		}
+
+		return nil
+	}
+
+	if err := ParallelForEach2(ctx, s.n, s.k, stream, parallelForEachFunc); err != nil {
 		return fmt.Errorf("parallel ClickHouse ingestion: %w", err)
 	}
-	for _, worker := range workers {
+
+	for i, worker := range workers {
 		if err := worker.Flush(); err != nil {
-			return err
+			return fmt.Errorf("flush worker %d: %w", i, err)
 		}
 	}
 	return nil

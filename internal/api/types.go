@@ -37,6 +37,7 @@ type CurrentStatusEvent struct {
 }
 
 type CompressedFIE struct {
+	SequenceNumber     uint64    `json:"sequence_number"`
 	ProbingDirectiveID uint32    `json:"probing_directive_id"`
 	NearReplyAddress   []byte    `json:"near_reply_address"`
 	FarReplyAddress    []byte    `json:"far_reply_address"`
@@ -50,4 +51,17 @@ type FullFIE struct {
 
 	SequenceNumber uint64    `json:"sequence_number"`
 	CaptureTime    time.Time `json:"capture_time"`
+}
+
+type LiteFIE struct {
+	ProbingDirectiveID uint64 `json:"probing_directive_id"`
+	SequenceNumber     uint64 `json:"sequence_number"`
+	// AgentID            string    `json:"agent_id"`
+	// Protocol           uint8     `json:"protocol"`
+	// SourceAddress      net.IP    `json:"source_address"`
+	DestinationAddress net.IP    `json:"destination_address"`
+	NearReplyAddress   net.IP    `json:"near_reply_address"`
+	FarReplyAddress    net.IP    `json:"far_reply_address"`
+	NearProbeTTL       *uint8    `json:"near_probe_ttl"`
+	CaptureTimestamp   time.Time `json:"capture_timestamp"`
 }

@@ -33,16 +33,24 @@ func ParallelForEach[T any](ctx context.Context, n, k int, i iter.Seq[T], f func
 		return fmt.Errorf("buffer size cannot be negative")
 	}
 
+	type envelope struct {
+		t T
+	}
+
 	g, childCtx := errgroup.WithContext(ctx)
-	tChan := make(chan T, k)
+	tChan := make(chan envelope, k)
+
 	g.Go(func() error {
 		defer close(tChan)
 
 		for t := range i {
 			select {
 			case <-childCtx.Done():
-				return childCtx.Err()
-			case tChan <- t:
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				return nil
+			case tChan <- envelope{t: t}:
 			}
 		}
 		return nil
@@ -53,9 +61,9 @@ func ParallelForEach[T any](ctx context.Context, n, k int, i iter.Seq[T], f func
 				ctx:   childCtx,
 				index: l,
 			}
-			for t := range tChan {
-				if err := f(winfo, t); err != nil {
-					return err
+			for env := range tChan {
+				if err := f(winfo, env.t); err != nil {
+					return fmt.Errorf("error on worker %d: %w", l, err)
 				}
 			}
 			return nil
@@ -86,11 +94,11 @@ func ParallelForEach2[T, E any](ctx context.Context, n, k int, i iter.Seq2[T, E]
 		for t, e := range i {
 			select {
 			case <-childCtx.Done():
-				return childCtx.Err()
-			case tChan <- envelope{
-				t: t,
-				e: e,
-			}:
+				if err := ctx.Err(); err != nil {
+					return fmt.Errorf("error on producer: %w", err)
+				}
+				return nil
+			case tChan <- envelope{t: t, e: e}:
 			}
 		}
 		return nil
@@ -103,7 +111,7 @@ func ParallelForEach2[T, E any](ctx context.Context, n, k int, i iter.Seq2[T, E]
 			}
 			for env := range tChan {
 				if err := f(winfo, env.t, env.e); err != nil {
-					return err
+					return fmt.Errorf("error on worker %d: %w", l, err)
 				}
 			}
 			return nil

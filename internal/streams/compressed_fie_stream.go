@@ -70,8 +70,9 @@ func NewCompressedFIEStream(fiesDir string) (*compressedFIEStream, error) {
 
 func (s *compressedFIEStream) Events() iter.Seq2[*api.CompressedFIE, error] {
 	return func(yield func(*api.CompressedFIE, error) bool) {
+		var sequenceNumber uint64 = 0
 		for _, filename := range s.files {
-			if !s.readFile(filename, yield) {
+			if !s.readFile(filename, yield, &sequenceNumber) {
 				return
 			}
 		}
@@ -82,7 +83,7 @@ func (s *compressedFIEStream) Len() int {
 	return s.len
 }
 
-func (s *compressedFIEStream) readFile(filename string, yield func(*api.CompressedFIE, error) bool) bool {
+func (s *compressedFIEStream) readFile(filename string, yield func(*api.CompressedFIE, error) bool, sequenceNumber *uint64) bool {
 	baseTime, err := parseFIEBaseTime(filename)
 	if err != nil {
 		yield(nil, err)
@@ -133,6 +134,8 @@ func (s *compressedFIEStream) readFile(filename string, yield func(*api.Compress
 		}
 
 		record.CaptureBaseTime = baseTime
+		record.SequenceNumber = *sequenceNumber
+		*sequenceNumber++
 
 		if !yield(&record, nil) {
 			return false
