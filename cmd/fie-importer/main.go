@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fie-importer/internal/streams"
 	"fmt"
 	"io"
@@ -33,6 +34,7 @@ func (w *CountingWriter) Count() uint64 {
 func main() {
 	rootCmd := &cobra.Command{Use: "fie-importer"}
 	rootCmd.AddCommand(newParquetCommand())
+	rootCmd.AddCommand(newPDsCommand())
 
 	if err := rootCmd.Execute(); err != nil {
 		log.Fatal(err)
@@ -173,6 +175,62 @@ func newParquetCommand() *cobra.Command { //nolint
 	cmd.Flags().StringSliceVar(&pdids, "pdids", nil, "probing directive IDs to include")
 
 	_ = cmd.MarkFlagRequired("fies-dir")
+
+	return cmd
+}
+
+func newPDsCommand() *cobra.Command {
+	var (
+		eventsDir string
+		output    string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "pds",
+		Short: "Print probing directives as JSONL",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			rawStream, err := streams.NewRawEventStream(eventsDir)
+			if err != nil {
+				return err
+			}
+
+			pdStream, err := streams.NewProbingDirectiveStream(rawStream)
+			if err != nil {
+				return err
+			}
+
+			outputWriter := cmd.OutOrStdout()
+			var outputFile *os.File
+
+			if output != "" {
+				outputFile, err = os.Create(output) //nolint:gosec
+				if err != nil {
+					return err
+				}
+				defer outputFile.Close() //nolint:errcheck
+				outputWriter = outputFile
+			}
+
+			encoder := json.NewEncoder(outputWriter)
+
+			for pd, err := range pdStream.Events() {
+				if err != nil {
+					return err
+				}
+
+				if err := encoder.Encode(pd); err != nil {
+					return fmt.Errorf("encode probing directive: %w", err)
+				}
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&eventsDir, "events-dir", "", "directory containing event files")
+	cmd.Flags().StringVarP(&output, "output", "o", "", "output JSONL file, stdout if omitted")
+
+	_ = cmd.MarkFlagRequired("events-dir")
 
 	return cmd
 }

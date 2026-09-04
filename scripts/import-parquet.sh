@@ -26,13 +26,13 @@ clickhouse-client \
 	--user "$CH_USER" \
 	--password "$CH_PASSWORD" \
 	--query "
-        CREATE TABLE IF NOT EXISTS \`${TABLE}\`
+        CREATE TABLE \`${TABLE}\`
         (
             sequence_number UInt64,
-            probing_directive_id UInt32,
+            probing_directive_id UInt64,
             near_reply_address Nullable(IPv6),
             far_reply_address Nullable(IPv6),
-            capture_timestamp UInt32
+            capture_timestamp DateTime
         )
         ENGINE = MergeTree
         ORDER BY sequence_number
