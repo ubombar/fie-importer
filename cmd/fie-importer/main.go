@@ -35,6 +35,7 @@ func main() {
 	rootCmd := &cobra.Command{Use: "fie-importer"}
 	rootCmd.AddCommand(newParquetCommand())
 	rootCmd.AddCommand(newPDsCommand())
+	rootCmd.AddCommand(newCurrentStatusCommand())
 
 	if err := rootCmd.Execute(); err != nil {
 		log.Fatal(err)
@@ -179,7 +180,7 @@ func newParquetCommand() *cobra.Command { //nolint
 	return cmd
 }
 
-func newPDsCommand() *cobra.Command {
+func newPDsCommand() *cobra.Command { //nolint
 	var (
 		eventsDir string
 		output    string
@@ -220,6 +221,62 @@ func newPDsCommand() *cobra.Command {
 
 				if err := encoder.Encode(pd); err != nil {
 					return fmt.Errorf("encode probing directive: %w", err)
+				}
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&eventsDir, "events-dir", "", "directory containing event files")
+	cmd.Flags().StringVarP(&output, "output", "o", "", "output JSONL file, stdout if omitted")
+
+	_ = cmd.MarkFlagRequired("events-dir")
+
+	return cmd
+}
+
+func newCurrentStatusCommand() *cobra.Command { //nolint
+	var (
+		eventsDir string
+		output    string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "current-status",
+		Short: "Print current status events as JSONL",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			rawStream, err := streams.NewRawEventStream(eventsDir)
+			if err != nil {
+				return err
+			}
+
+			statusStream, err := streams.NewCurrentStatusStream(rawStream)
+			if err != nil {
+				return err
+			}
+
+			outputWriter := cmd.OutOrStdout()
+			var outputFile *os.File
+
+			if output != "" {
+				outputFile, err = os.Create(output) //nolint:gosec
+				if err != nil {
+					return err
+				}
+				defer outputFile.Close() //nolint:errcheck
+				outputWriter = outputFile
+			}
+
+			encoder := json.NewEncoder(outputWriter)
+
+			for status, err := range statusStream.Events() {
+				if err != nil {
+					return err
+				}
+
+				if err := encoder.Encode(status); err != nil {
+					return fmt.Errorf("encode current status event: %w", err)
 				}
 			}
 

@@ -112,6 +112,7 @@ func (s *compressedFIEStream) readFile(filename string, yield func(*api.Compress
 	if s.where != "" {
 		query = fmt.Sprintf("%s WHERE %s", query, s.where)
 	}
+	query = fmt.Sprintf("%s ORDER BY rowid", query)
 
 	rows, err := db.Query(query)
 	if err != nil {
