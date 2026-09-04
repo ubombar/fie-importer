@@ -48,7 +48,7 @@ func newParquetCommand() *cobra.Command { //nolint
 		Use:   "parquet",
 		Short: "Export compressed FIEs to Parquet",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			compressedFIEStream, err := streams.NewCompressedFIEStream(fiesDir)
+			compressedFIEStream, err := streams.NewCompressedFIEStream(fiesDir, "")
 			if err != nil {
 				return err
 			}

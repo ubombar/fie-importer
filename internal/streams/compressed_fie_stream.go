@@ -20,13 +20,14 @@ type CompressedFIEStream interface {
 }
 
 type compressedFIEStream struct {
+	where string
 	files []string
 	len   int
 }
 
 var _ CompressedFIEStream = (*compressedFIEStream)(nil)
 
-func NewCompressedFIEStream(fiesDir string) (*compressedFIEStream, error) {
+func NewCompressedFIEStream(fiesDir string, where string) (*compressedFIEStream, error) {
 	files, err := filepath.Glob(filepath.Join(fiesDir, "fies-*.duckdb"))
 	if err != nil {
 		return nil, fmt.Errorf("glob FIE files: %w", err)
@@ -63,6 +64,7 @@ func NewCompressedFIEStream(fiesDir string) (*compressedFIEStream, error) {
 	}
 
 	return &compressedFIEStream{
+		where: where,
 		files: files,
 		len:   total,
 	}, nil
@@ -98,7 +100,7 @@ func (s *compressedFIEStream) readFile(filename string, yield func(*api.Compress
 
 	db := sql.OpenDB(connector)
 
-	rows, err := db.Query(`
+	query := `
 		SELECT
 			probing_directive_id,
 			near_reply_address,
@@ -106,7 +108,12 @@ func (s *compressedFIEStream) readFile(filename string, yield func(*api.Compress
 			capture_second,
 			time_deltas
 		FROM fies
-	`)
+	`
+	if s.where != "" {
+		query = fmt.Sprintf("%s WHERE %s", query, s.where)
+	}
+
+	rows, err := db.Query(query)
 	if err != nil {
 		_ = db.Close()
 		_ = connector.Close()

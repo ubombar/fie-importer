@@ -17,6 +17,7 @@ type FullFIEStream interface {
 }
 
 type fullFIEStream struct {
+	where      string
 	compressed CompressedFIEStream
 	agents     AgentConnectionStream
 	pdByID     map[uint64]*retinaapi.ProbingDirective
@@ -25,7 +26,12 @@ type fullFIEStream struct {
 var _ FullFIEStream = (*fullFIEStream)(nil)
 
 func NewFullFIEStream(compressed CompressedFIEStream, pds ProbingDirectiveStream, agents AgentConnectionStream) (*fullFIEStream, error) {
+	return NewFullFIEStreamWhere(compressed, pds, agents, "")
+}
+
+func NewFullFIEStreamWhere(compressed CompressedFIEStream, pds ProbingDirectiveStream, agents AgentConnectionStream, where string) (*fullFIEStream, error) {
 	s := &fullFIEStream{
+		where:      where,
 		compressed: compressed,
 		agents:     agents,
 		pdByID:     make(map[uint64]*retinaapi.ProbingDirective, pds.Len()),
@@ -62,12 +68,41 @@ func NewFullFIEStreamFromDirs(eventsDir, fiesDir string) (*fullFIEStream, error)
 		return nil, err
 	}
 
-	compressed, err := NewCompressedFIEStream(fiesDir)
+	compressed, err := NewCompressedFIEStream(fiesDir, "")
 	if err != nil {
 		return nil, err
 	}
 
 	full, err := NewFullFIEStream(compressed, pds, agents)
+	if err != nil {
+		return nil, err
+	}
+
+	return full, nil
+}
+
+func NewFullFIEStreamFromDirsWhere(eventsDir, fiesDir, where string) (*fullFIEStream, error) {
+	rawEvents, err := NewRawEventStream(eventsDir)
+	if err != nil {
+		return nil, err
+	}
+
+	pds, err := NewProbingDirectiveStream(rawEvents)
+	if err != nil {
+		return nil, err
+	}
+
+	agents, err := NewAgentConnectionStream(rawEvents)
+	if err != nil {
+		return nil, err
+	}
+
+	compressed, err := NewCompressedFIEStream(fiesDir, where)
+	if err != nil {
+		return nil, err
+	}
+
+	full, err := NewFullFIEStreamWhere(compressed, pds, agents, where)
 	if err != nil {
 		return nil, err
 	}
