@@ -6,6 +6,8 @@ import (
 	"io"
 	"log"
 	"os"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -42,13 +44,28 @@ func newParquetCommand() *cobra.Command { //nolint
 		fiesDir   string
 		output    string
 		batchSize int
+		pdids     []string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "parquet",
 		Short: "Export compressed FIEs to Parquet",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			compressedFIEStream, err := streams.NewCompressedFIEStream(fiesDir, "")
+			where := ""
+
+			if len(pdids) > 0 {
+				ids := make([]string, len(pdids))
+				for i, value := range pdids {
+					pdid, err := strconv.ParseUint(value, 10, 32)
+					if err != nil {
+						return fmt.Errorf("invalid probing directive ID %q: %w", value, err)
+					}
+					ids[i] = strconv.FormatUint(pdid, 10)
+				}
+				where = fmt.Sprintf("probing_directive_id IN (%s)", strings.Join(ids, ","))
+			}
+
+			compressedFIEStream, err := streams.NewCompressedFIEStream(fiesDir, where)
 			if err != nil {
 				return err
 			}
@@ -153,6 +170,7 @@ func newParquetCommand() *cobra.Command { //nolint
 	cmd.Flags().StringVar(&fiesDir, "fies-dir", "", "directory containing compressed FIE files")
 	cmd.Flags().StringVarP(&output, "output", "o", "", "output Parquet file, stdout if omitted")
 	cmd.Flags().IntVar(&batchSize, "batch-size", 2_000_000, "Parquet ingestion batch size") // >= 1M to allow billions of row groups.
+	cmd.Flags().StringSliceVar(&pdids, "pdids", nil, "probing directive IDs to include")
 
 	_ = cmd.MarkFlagRequired("fies-dir")
 

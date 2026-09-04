@@ -27,7 +27,7 @@ type compressedFIEStream struct {
 
 var _ CompressedFIEStream = (*compressedFIEStream)(nil)
 
-func NewCompressedFIEStream(fiesDir string, where string) (*compressedFIEStream, error) {
+func NewCompressedFIEStream(fiesDir, where string) (*compressedFIEStream, error) {
 	files, err := filepath.Glob(filepath.Join(fiesDir, "fies-*.duckdb"))
 	if err != nil {
 		return nil, fmt.Errorf("glob FIE files: %w", err)
