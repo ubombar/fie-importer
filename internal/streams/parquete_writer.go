@@ -38,10 +38,6 @@ func (w *LiteFIEParquetIngester) Ingest(stream iter.Seq2[*api.CompressedFIE, err
 	compactIP := func(ip []byte) []byte {
 		v := net.IP(ip)
 
-		if v4 := v.To4(); v4 != nil {
-			return v4
-		}
-
 		if v6 := v.To16(); v6 != nil {
 			return v6
 		}
