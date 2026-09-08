@@ -37,7 +37,7 @@ func NewCompressedFIEStream(fiesDir, where string) (*compressedFIEStream, error)
 	total := 0
 
 	for _, filename := range files {
-		connector, err := duckdb.NewConnector(filename, nil)
+		connector, err := duckdb.NewConnector(filename+"?access_mode=read_only", nil)
 		if err != nil {
 			return nil, fmt.Errorf("open DuckDB connector %q: %w", filename, err)
 		}
