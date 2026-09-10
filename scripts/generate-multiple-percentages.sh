@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 FIES_DIR="../campaign4_snapshots/20260829_134155_s1/fies"
-OUT_DIR="/Volumes/Backup/sampled"
+OUT_DIR="/Volumes/Backup/sampled/smp2"
 SEED=42
 
 for PCT in 1 5 25 50 100; do
