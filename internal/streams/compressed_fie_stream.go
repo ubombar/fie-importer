@@ -44,8 +44,21 @@ func NewCompressedFIEStream(fiesDir, where string) (*compressedFIEStream, error)
 
 		db := sql.OpenDB(connector)
 
+		//nolint
+		query := fmt.Sprintf(`
+			SELECT count(f.*)
+			FROM fies f
+			WHERE f.probing_directive_id IN (
+				SELECT probing_directive_id
+				FROM (
+					SELECT DISTINCT probing_directive_id
+					FROM fies
+					%s
+				)
+			)
+		`, where)
 		var count int
-		err = db.QueryRow(`SELECT count(*) FROM fies`).Scan(&count)
+		err = db.QueryRow(query).Scan(&count)
 
 		closeErr := db.Close()
 		connectorErr := connector.Close()
@@ -92,7 +105,7 @@ func (s *compressedFIEStream) readFile(filename string, yield func(*api.Compress
 		return false
 	}
 
-	connector, err := duckdb.NewConnector(filename, nil)
+	connector, err := duckdb.NewConnector(filename+"?access_mode=read_only", nil)
 	if err != nil {
 		yield(nil, fmt.Errorf("open DuckDB connector %q: %w", filename, err))
 		return false
@@ -100,19 +113,25 @@ func (s *compressedFIEStream) readFile(filename string, yield func(*api.Compress
 
 	db := sql.OpenDB(connector)
 
-	query := `
-		SELECT
-			probing_directive_id,
-			near_reply_address,
-			far_reply_address,
-			capture_second,
-			time_deltas
-		FROM fies
-	`
-	if s.where != "" {
-		query = fmt.Sprintf("%s WHERE %s", query, s.where)
-	}
-	query = fmt.Sprintf("%s ORDER BY rowid", query)
+	//nolint
+	query := fmt.Sprintf(`
+	SELECT
+		f.probing_directive_id,
+		f.near_reply_address,
+		f.far_reply_address,
+		f.capture_second,
+		f.time_deltas
+	FROM fies f
+	WHERE f.probing_directive_id IN (
+		SELECT probing_directive_id
+		FROM (
+			SELECT DISTINCT probing_directive_id
+			FROM fies
+			%s
+		)
+	)
+	ORDER BY f.rowid
+`, s.where)
 
 	rows, err := db.Query(query)
 	if err != nil {

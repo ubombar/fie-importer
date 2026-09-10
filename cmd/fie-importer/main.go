@@ -44,10 +44,13 @@ func main() {
 
 func newParquetCommand() *cobra.Command { //nolint
 	var (
-		fiesDir   string
-		output    string
-		batchSize int
-		pdids     []string
+		fiesDir     string
+		output      string
+		batchSize   int
+		pdids       []string
+		pdidPercent float64
+		seed        uint64
+		maxPDID     uint64
 	)
 
 	cmd := &cobra.Command{
@@ -66,6 +69,17 @@ func newParquetCommand() *cobra.Command { //nolint
 					ids[i] = strconv.FormatUint(pdid, 10)
 				}
 				where = fmt.Sprintf("probing_directive_id IN (%s)", strings.Join(ids, ","))
+			} else {
+				if pdidPercent <= 0 || pdidPercent > 100 {
+					return fmt.Errorf("pdid-percent must be in range (0, 100]")
+				}
+
+				if pdidPercent < 100 {
+					const buckets uint64 = 1_000_000
+					threshold := uint64((pdidPercent / 100) * float64(buckets))
+
+					where = fmt.Sprintf("WHERE hash(probing_directive_id, %d) %% %d < %d", seed, buckets, threshold)
+				}
 			}
 
 			compressedFIEStream, err := streams.NewCompressedFIEStream(fiesDir, where)
@@ -174,6 +188,10 @@ func newParquetCommand() *cobra.Command { //nolint
 	cmd.Flags().StringVarP(&output, "output", "o", "", "output Parquet file, stdout if omitted")
 	cmd.Flags().IntVar(&batchSize, "batch-size", 2_000_000, "Parquet ingestion batch size") // >= 1M to allow billions of row groups.
 	cmd.Flags().StringSliceVar(&pdids, "pdids", nil, "probing directive IDs to include")
+	cmd.Flags().Float64Var(&pdidPercent, "pdid-percent", 0, "include a deterministic percentage of probing directives")
+	cmd.Flags().Uint64Var(&seed, "seed", 0, "seed used for probing directive sampling")
+	cmd.Flags().Uint64Var(&maxPDID, "max-pdid", 369768, "maximum probing directive ID")
+	cmd.MarkFlagsMutuallyExclusive("pdids", "pdid-percent")
 
 	_ = cmd.MarkFlagRequired("fies-dir")
 
