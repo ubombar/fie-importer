@@ -20,7 +20,7 @@ FDHS_TABLE="$3"
 HOST="${CLICKHOUSE_ADDRESS%:*}"
 PORT="${CLICKHOUSE_ADDRESS##*:}"
 
-CH=(clickhouse-client --host "$HOST" --port "$PORT" --database "$CLICKHOUSE_DATABASE" --user "$CH_USER" --password "$CH_PASSWORD")
+CH=(clickhouse-client --host "$HOST" --port "$PORT" --database "$CLICKHOUSE_DATABASE" --user "$CH_USER" --password "$CH_PASSWORD" --max_execution_time=0)
 
 EXISTS=$("${CH[@]}" --query "EXISTS TABLE \`${FDHS_TABLE}\`")
 if [[ "$EXISTS" == "1" ]]; then
@@ -32,7 +32,7 @@ echo "creating table '${FDHS_TABLE}'" >&2
 "${CH[@]}" --query "
     CREATE TABLE \`${FDHS_TABLE}\`
     ENGINE = MergeTree
-    ORDER BY (near_address, destination_address, probing_directive_id, sequence_number)
+    ORDER BY (near_address, destination_address, capture_timestamp, sequence_number)
     AS SELECT
         f.probing_directive_id AS probing_directive_id,
         f.sequence_number AS sequence_number,

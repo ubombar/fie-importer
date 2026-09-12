@@ -45,6 +45,7 @@ clickhouse-client \
 	--user "$CH_USER" \
 	--password "$CH_PASSWORD" \
 	--async_insert=0 \
+	--max_execution_time=0 \
 	--query "
     INSERT INTO \`${TABLE}\`
     (
