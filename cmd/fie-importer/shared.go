@@ -33,27 +33,37 @@ func envOr(key, fallback string) string {
 // CH_PASSWORD and creates the table, which must not exist.
 func newTable(ctx context.Context, disp *progress.Display, c *clickhouse.Config, table string,
 	create func(*clickhouse.Client, context.Context, string) error) (*clickhouse.Client, error) {
+	ch, _, err := openTable(ctx, disp, c, table, create, false)
+	return ch, err
+}
+
+// openTable is newTable, except that with appendOK an existing table is used
+// as it is. created reports whether this call created the table.
+func openTable(ctx context.Context, disp *progress.Display, c *clickhouse.Config, table string,
+	create func(*clickhouse.Client, context.Context, string) error, appendOK bool) (ch *clickhouse.Client, created bool, err error) {
 	c.Username, c.Password = os.Getenv("CH_USER"), os.Getenv("CH_PASSWORD")
 	if c.Username == "" {
-		return nil, errors.New("CH_USER is not set")
+		return nil, false, errors.New("CH_USER is not set")
 	}
 	disp.Phase("connecting to ClickHouse at " + c.Address)
-	ch, err := clickhouse.Connect(ctx, c)
+	ch, err = clickhouse.Connect(ctx, c)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	exists, err := ch.TableExists(ctx, table)
-	if err == nil && exists {
+	switch {
+	case err != nil:
+	case exists && !appendOK:
 		err = fmt.Errorf("table %s.%s already exists", c.Database, table)
-	}
-	if err == nil {
+	case !exists:
 		err = create(ch, ctx, table)
+		created = err == nil
 	}
 	if err != nil {
 		_ = ch.Close()
-		return nil, err
+		return nil, false, err
 	}
-	return ch, nil
+	return ch, created, nil
 }
 
 // dropOnFailure drops the table when *err is set and drop is true. The

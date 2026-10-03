@@ -6,11 +6,14 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
 	"regexp"
+	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 
+	"fie-importer/internal/agents"
 	"fie-importer/internal/fies"
 	"fie-importer/internal/pds"
 )
@@ -47,6 +50,37 @@ const PDTableDDL = `CREATE TABLE %s (
     second_half_word UInt16
 ) ENGINE = MergeTree
 ORDER BY pd_id`
+
+// AgentTableDDL creates the agent table: one row per agent VM and snapshot.
+// agent_id joins it with the PD table. Prefixes are CIDR strings.
+const AgentTableDDL = `CREATE TABLE %s (
+    snapshot_time        DateTime64(6, 'UTC'),
+    agent_id             LowCardinality(String),
+    region               LowCardinality(String),
+    zone                 LowCardinality(String),
+    network              LowCardinality(String),
+    subnetwork           LowCardinality(String),
+    machine_type         LowCardinality(String),
+    vm_status            LowCardinality(String),
+    vm_created_time      DateTime64(6, 'UTC'),
+    vm_last_start_time   Nullable(DateTime64(6, 'UTC')),
+    internal_ipv4        Nullable(IPv4),
+    internal_ipv4_prefix Nullable(String),
+    external_ipv4        Nullable(IPv4),
+    internal_ipv6        Nullable(IPv6),
+    external_ipv6        Nullable(IPv6),
+    external_ipv6_prefix Nullable(String),
+    subnet_ipv6_prefix   Nullable(String),
+    agent_image                  Nullable(String),
+    agent_image_digest           Nullable(String),
+    agent_container_state        Nullable(String),
+    agent_container_status       Nullable(String),
+    agent_container_started_time Nullable(DateTime64(6, 'UTC')),
+    agent_service_state          Nullable(String),
+    agent_service_restarts       Nullable(UInt32),
+    version_error                Nullable(String)
+) ENGINE = MergeTree
+ORDER BY (agent_id, snapshot_time)`
 
 // Config says how to reach ClickHouse.
 type Config struct {
@@ -118,6 +152,11 @@ func (c *Client) CreatePDTable(ctx context.Context, table string) error {
 	return c.createTable(ctx, PDTableDDL, table)
 }
 
+// CreateAgentTable creates the agent table. It fails if the table exists.
+func (c *Client) CreateAgentTable(ctx context.Context, table string) error {
+	return c.createTable(ctx, AgentTableDDL, table)
+}
+
 func (c *Client) createTable(ctx context.Context, ddl, table string) error {
 	if err := ValidateTableName(table); err != nil {
 		return err
@@ -153,6 +192,41 @@ func (c *Client) InsertPDs(ctx context.Context, table string, rows []pds.Row) er
 	return insert(ctx, c, table, rows, func(r *pds.Row) []any {
 		return []any{r.PDID, r.AgentID, r.IPVersion, r.Protocol, r.Destination, r.NearTTL, r.FirstHalfWord, r.SecondHalfWord}
 	})
+}
+
+// InsertAgents sends agent rows to the table as one batch.
+func (c *Client) InsertAgents(ctx context.Context, table string, rows []agents.Agent) error {
+	return insert(ctx, c, table, rows, func(a *agents.Agent) []any {
+		return []any{a.SnapshotTime, a.AgentID, a.Region, a.Zone, a.Network, a.Subnetwork, a.MachineType, a.VMStatus,
+			a.VMCreatedTime, a.VMLastStartTime, ipv4(a.InternalIPv4), a.InternalIPv4Prefix, ipv4(a.ExternalIPv4),
+			a.InternalIPv6, a.ExternalIPv6, a.ExternalIPv6Prefix, a.SubnetIPv6Prefix,
+			a.AgentImage, a.AgentImageDigest, a.AgentContainerState, a.AgentContainerStatus, a.AgentContainerStartedTime,
+			a.AgentServiceState, a.AgentServiceRestarts, a.VersionError}
+	})
+}
+
+// CountSnapshot counts the table's rows of one snapshot.
+func (c *Client) CountSnapshot(ctx context.Context, table string, snapshot time.Time) (uint64, error) {
+	var n uint64
+	// A time.Time parameter is bound at second precision: pass the
+	// microseconds explicitly.
+	q := "SELECT count() FROM " + quote(table) + " WHERE snapshot_time = toDateTime64(?, 6, 'UTC')"
+	if err := c.conn.QueryRow(ctx, q, snapshot.UTC().Format("2006-01-02 15:04:05.000000")).Scan(&n); err != nil {
+		return 0, fmt.Errorf("cannot count rows of table %s: %w", table, err)
+	}
+	return n, nil
+}
+
+// ipv4 returns the 4-byte form ClickHouse's IPv4 type takes, nil for NULL.
+func ipv4(ip *net.IP) *net.IP {
+	if ip == nil {
+		return nil
+	}
+	v4 := ip.To4()
+	if v4 == nil {
+		return nil
+	}
+	return &v4
 }
 
 func insert[T any](ctx context.Context, c *Client, table string, rows []T, values func(*T) []any) error {

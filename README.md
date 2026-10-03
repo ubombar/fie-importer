@@ -1,6 +1,6 @@
 # fie-importer
 
-`fie-importer` imports Retina captures into ClickHouse: the FIEs with `upload-fies` and the PDs they answer with `upload-pds`. Version 2 reads the **fies2a** capture files the orchestrator writes since `retina-orchestrator` `research-v1.6.0`: one zstd Parquet file per hour, `fies2a-<interval start>.parquet`, sorted by PD ID. The format is described in `FIES2.md` in the orchestrator repository.
+`fie-importer` imports Retina captures into ClickHouse: the FIEs with `upload-fies`, the PDs they answer with `upload-pds`, and the agent VMs that ran them with `upload-agents`. Version 2 reads the **fies2a** capture files the orchestrator writes since `retina-orchestrator` `research-v1.6.0`: one zstd Parquet file per hour, `fies2a-<interval start>.parquet`, sorted by PD ID. The format is described in `FIES2.md` in the orchestrator repository.
 
 Version 1 (the `parquet`, `pds` and `current-status` commands, for the original `fies` format) is kept under [`deprecated/`](deprecated/NOTICE.md) for reference only.
 
@@ -119,6 +119,88 @@ ORDER BY pd_id
 | `destination_addr` | IPv4 as IPv4-mapped IPv6, like the FIE table |
 | `near_ttl` | TTL of the near probe; the far probe is `near_ttl + 1` |
 | `first_half_word`, `second_half_word` | what the agent probes with: for UDP the source and destination ports; for ICMP and ICMPv6 the first half-word and **0**, since the agent always sends these probes with a zero second half-word (`retina-agent` `caracalDstPort`) |
+
+## upload-agents
+
+```bash
+fie-importer upload-agents <table> [options]
+```
+
+Takes a snapshot of the agent VMs and uploads it, one row per VM. The VMs are listed with `gcloud compute instances list` (plus one `subnets list` for the prefixes), and the image of each VM's `retina-agent` container is read over `gcloud compute ssh` with `docker inspect`. `gcloud` must be installed and logged in, and ssh to the VMs must work.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--filter` | `labels.project=retina AND labels.env=research` | `gcloud` filter selecting the agent VMs |
+| `--exclude` | `retina-server-research` | VM names to leave out, comma-separated |
+| `--project` | gcloud's current project | GCP project |
+| `--ssh-parallel` | `8` | ssh sessions at once |
+| `--ssh-timeout` | `30s` | time allowed for each VM's lookup |
+| `--no-ssh` | `false` | skip the image lookup; the image columns are NULL |
+| `--append` | `false` | add this snapshot to the table if it already exists |
+| `--drop-on-fail` | `true` | drop the table if this run created it and the upload fails; an appended-to table is never dropped |
+| `--dry-run` | `false` | print the snapshot without touching ClickHouse |
+| `--clickhouse-*` | | as for `upload-fies`; credentials from `CH_USER` and `CH_PASSWORD` |
+
+- A VM whose image cannot be read (stopped, ssh failure, timeout, no `retina-agent` container) is still uploaded, with the reason in `version_error`. The unit's state and restart count are read even when the container is missing, which happens between two restarts of a crash-looping unit.
+- The command prints one line per agent: ✔ or ✘, its external IPv4, the unit state with its restart count (`active ↻3`), Docker's status (`Up 7 minutes`) and the image, then a count per image and of agents not running. An agent is ✘ when its unit is not active or its container is not running. With all 38 research agents the lookup takes about 20 seconds.
+- With `--append`, every run adds a snapshot; `snapshot_time` tells them apart.
+
+### The agent table
+
+```sql
+CREATE TABLE <table> (
+    snapshot_time        DateTime64(6, 'UTC'),
+    agent_id             LowCardinality(String),
+    region               LowCardinality(String),
+    zone                 LowCardinality(String),
+    network              LowCardinality(String),
+    subnetwork           LowCardinality(String),
+    machine_type         LowCardinality(String),
+    vm_status            LowCardinality(String),
+    vm_created_time      DateTime64(6, 'UTC'),
+    vm_last_start_time   Nullable(DateTime64(6, 'UTC')),
+    internal_ipv4        Nullable(IPv4),
+    internal_ipv4_prefix Nullable(String),
+    external_ipv4        Nullable(IPv4),
+    internal_ipv6        Nullable(IPv6),
+    external_ipv6        Nullable(IPv6),
+    external_ipv6_prefix Nullable(String),
+    subnet_ipv6_prefix   Nullable(String),
+    agent_image                  Nullable(String),
+    agent_image_digest           Nullable(String),
+    agent_container_state        Nullable(String),
+    agent_container_status       Nullable(String),
+    agent_container_started_time Nullable(DateTime64(6, 'UTC')),
+    agent_service_state          Nullable(String),
+    agent_service_restarts       Nullable(UInt32),
+    version_error                Nullable(String)
+) ENGINE = MergeTree
+ORDER BY (agent_id, snapshot_time)
+```
+
+| Column | Meaning |
+| --- | --- |
+| `snapshot_time` | when the snapshot was taken |
+| `agent_id` | the VM name, which is the `agent_id` of the PDs |
+| `region`, `zone`, `network`, `subnetwork`, `machine_type`, `vm_status` | from `gcloud`; `vm_status` is `RUNNING`, `TERMINATED`… |
+| `vm_created_time`, `vm_last_start_time` | when the VM was created and last started |
+| `internal_ipv4`, `internal_ipv4_prefix` | the VM's internal address and its subnet range, e.g. `10.4.0.0/24` |
+| `external_ipv4` | the VM's external address |
+| `internal_ipv6` | NULL with the current subnets, which only have external IPv6 |
+| `external_ipv6`, `external_ipv6_prefix` | the VM's external IPv6 and its own range, e.g. a `/96` |
+| `subnet_ipv6_prefix` | the subnet's IPv6 range, e.g. a `/64` |
+| `agent_image` | the full image name with its tag, e.g. `ghcr.io/dioptra-io/retina-agent:research-v1.1.0` |
+| `agent_image_digest` | the image's `sha256` digest, which tells two builds of one tag apart |
+| `agent_container_state` | Docker's state of the `retina-agent` container: `running`, `exited`, `restarting`… |
+| `agent_container_status` | Docker's own wording, as `docker ps` shows it: `Up 2 minutes`, `Exited (2) 3 seconds ago` |
+| `agent_container_started_time` | when the container last started |
+| `agent_service_state` | systemd state of the `retina-agent` unit: `active`, or `activating` while it restarts |
+| `agent_service_restarts` | how many times systemd restarted the unit (`NRestarts`); a high, growing count means a crash loop |
+| `version_error` | why the image could not be read (stopped VM, ssh failure, no container), NULL when it was |
+
+A crash-looping agent still has an image: Docker keeps the exited container between restarts. Look at `agent_service_state`, `agent_container_state` and `agent_service_restarts` to tell it from a healthy one.
+
+Prefixes are CIDR strings in canonical form, so ClickHouse can test addresses against them: `isIPAddressInRange(toString(near_reply_addr), external_ipv6_prefix)`.
 
 ## The FIE table
 

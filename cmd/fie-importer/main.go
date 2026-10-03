@@ -12,7 +12,7 @@ import (
 )
 
 // version is the release of fie-importer.
-const version = "2.1.0"
+const version = "2.2.0"
 
 func main() {
 	os.Exit(run())
@@ -31,6 +31,7 @@ func run() int {
 	}
 	root.AddCommand(newUploadFIEsCommand())
 	root.AddCommand(newUploadPDsCommand())
+	root.AddCommand(newUploadAgentsCommand())
 	if err := root.ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
