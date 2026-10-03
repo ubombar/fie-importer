@@ -32,7 +32,7 @@ echo "creating table '${FDHS_TABLE}'" >&2
 "${CH[@]}" --query "
     CREATE TABLE \`${FDHS_TABLE}\`
     ENGINE = MergeTree
-    ORDER BY (near_address, destination_address, capture_timestamp, sequence_number)
+	ORDER BY (agent_id, ip_version, near_address, destination_address, capture_timestamp, sequence_number, probing_directive_id)
     AS SELECT
         f.probing_directive_id AS probing_directive_id,
         f.sequence_number AS sequence_number,

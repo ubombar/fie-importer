@@ -6,7 +6,7 @@ set -euo pipefail
 : "${CH_PASSWORD:?CH_PASSWORD is not set}"
 
 CLICKHOUSE_ADDRESS="${CLICKHOUSE_ADDRESS:-localhost:9000}"
-CLICKHOUSE_DATABASE="${CLICKHOUSE_DATABASE:-phase2_analysis}"
+CLICKHOUSE_DATABASE="${CLICKHOUSE_DATABASE:-pam_campaign}"
 
 if [[ $# -ne 2 ]]; then
 	echo "usage: $0 <table> <events-dir>" >&2
