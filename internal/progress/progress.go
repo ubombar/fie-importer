@@ -34,6 +34,10 @@ type Display struct {
 	fileName atomic.Value
 	phase    atomic.Value
 
+	// byteTotal and byteRead drive the bar of a stream (StartStream).
+	byteTotal int64
+	byteRead  func() int64
+
 	start   time.Time
 	mu      sync.Mutex
 	drawn   int // lines drawn by the last frame
@@ -80,6 +84,16 @@ func (d *Display) Start(total int64, files int) {
 	d.samples = []sample{{at: d.start}}
 	d.mu.Unlock()
 	d.phase.Store("")
+}
+
+// StartStream begins showing the progress of reading a stream of unknown
+// row count: the bar follows read() against totalBytes (0 if unknown), and
+// the counters show the rows sent.
+func (d *Display) StartStream(totalBytes int64, read func() int64) {
+	d.mu.Lock()
+	d.byteTotal, d.byteRead = totalBytes, read
+	d.mu.Unlock()
+	d.Start(0, 0)
 }
 
 // Run redraws until Stop is called. Start it in its own goroutine.
@@ -166,6 +180,9 @@ func (d *Display) draw(final bool) {
 }
 
 func (d *Display) frame(final bool) []string {
+	if d.byteRead != nil {
+		return d.streamFrame(final)
+	}
 	now := time.Now()
 	total, sent := d.total.Load(), d.sent.Load()
 	elapsed := now.Sub(d.start)
@@ -205,6 +222,34 @@ func (d *Display) frame(final bool) []string {
 			d.style(blue, bar(ff, 12)), d.style(dim, fmt.Sprintf("%3.0f%%", ff*100))))
 	}
 	return lines
+}
+
+func (d *Display) streamFrame(final bool) []string {
+	now := time.Now()
+	sent, read := d.sent.Load(), d.byteRead()
+	elapsed := now.Sub(d.start)
+	rate := d.rate(now, sent)
+	barWidth := max(10, min(48, d.width-48))
+	frac, eta := 0.0, "—"
+	if d.byteTotal > 0 {
+		frac = min(float64(read)/float64(d.byteTotal), 1)
+		if frac > 0 && !final {
+			eta = clock(time.Duration(float64(elapsed) * (1 - frac) / frac))
+		}
+	}
+	if final {
+		frac, eta = 1, "done"
+	}
+	size := bytesHuman(float64(read))
+	if d.byteTotal > 0 {
+		size += " / " + bytesHuman(float64(d.byteTotal))
+	}
+	overall := fmt.Sprintf(" %s %s  %s %s",
+		d.style(cyan, bar(frac, barWidth)), d.style(bold, fmt.Sprintf("%5.1f%%", frac*100)),
+		d.style(bold, human(sent)+" rows"), d.style(dim, "· "+size+" read"))
+	stats := d.style(dim, fmt.Sprintf("   %s rows/s · ≈%s/s to ClickHouse · elapsed %s · ETA %s",
+		human(int64(rate)), bytesHuman(float64(d.bytes.Load())/max(elapsed.Seconds(), 1e-3)), clock(elapsed), eta))
+	return []string{overall, stats}
 }
 
 // rate is the row rate over the last few seconds.

@@ -1,6 +1,6 @@
 # fie-importer
 
-`fie-importer` imports Retina captures into ClickHouse. Version 2 reads the **fies2a** capture files the orchestrator writes since `retina-orchestrator` `research-v1.6.0`: one zstd Parquet file per hour, `fies2a-<interval start>.parquet`, sorted by PD ID. The format is described in `FIES2.md` in the orchestrator repository.
+`fie-importer` imports Retina captures into ClickHouse: the FIEs with `upload-fies` and the PDs they answer with `upload-pds`. Version 2 reads the **fies2a** capture files the orchestrator writes since `retina-orchestrator` `research-v1.6.0`: one zstd Parquet file per hour, `fies2a-<interval start>.parquet`, sorted by PD ID. The format is described in `FIES2.md` in the orchestrator repository.
 
 Version 1 (the `parquet`, `pds` and `current-status` commands, for the original `fies` format) is kept under [`deprecated/`](deprecated/NOTICE.md) for reference only.
 
@@ -73,6 +73,52 @@ On a terminal, progress is redrawn in place: a bar for the whole upload, the row
 ✔ uploaded 9,433,682 rows into pam_campaign.tty_demo in 5.3s
   121,103 distinct PDs · captured 2026-10-03 11:05:00 → 2026-10-03 11:59:59 · 6 files · 1,763,484 rows/s · verified in ClickHouse
 ```
+
+## upload-pds
+
+```bash
+fie-importer upload-pds <table> --pds-file <file|-> [options]
+```
+
+Creates the table `<table>` and uploads a PD file into it. The file is JSON Lines of `retina-commons` `ProbingDirective`s, the format the orchestrator's insert API takes, plain or gzip-compressed (detected from the content); `-` reads stdin, so a tarball can be piped: `tar -xzOf pds.jsonl.tar.gz | fie-importer upload-pds t --pds-file -`.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--pds-file` | (required) | JSONL PD file, plain or gzip; `-` for stdin |
+| `--first-id` | `0` | PD ID of the first line, for a file inserted into an orchestrator that already had PDs |
+| `--batch-size` | `1000000` | rows per insert |
+| `--drop-on-fail` | `true` | drop the table if the upload fails or is interrupted |
+| `--dry-run` | `false` | parse and check the whole file, print counts per IP version, protocol and agent, without touching ClickHouse |
+| `--clickhouse-*` | | as for `upload-fies`; credentials from `CH_USER` and `CH_PASSWORD` |
+
+- **PD IDs follow the file order**: the first non-blank line gets `--first-id`, the next one `--first-id + 1`, and so on, which is how the orchestrator assigns them. Blank lines are skipped and take no ID. The file's own `probing_directive_id` and `ip_version` are ignored, as the orchestrator ignores them.
+- **A PD the orchestrator would refuse stops the upload**, naming its line and PD ID, so that the IDs in the table never drift from the orchestrator's. The checks are the orchestrator's: a valid destination address, a non-empty `agent_id`, and protocol 1 (ICMP), 17 (UDP) or 58 (ICMPv6) with its matching next header. TTLs are not checked, since the orchestrator accepts any.
+- Progress follows the bytes read from the file (compressed bytes for gzip).
+
+### The PD table
+
+```sql
+CREATE TABLE <table> (
+    pd_id            UInt32,
+    agent_id         LowCardinality(String),
+    ip_version       UInt8,
+    protocol         UInt8,
+    destination_addr IPv6,
+    near_ttl         UInt8,
+    first_half_word  UInt16,
+    second_half_word UInt16
+) ENGINE = MergeTree
+ORDER BY pd_id
+```
+
+| Column | Meaning |
+| --- | --- |
+| `pd_id` | joins with the FIE table's `pd_id` |
+| `ip_version` | 4 or 6, from the destination address |
+| `protocol` | 1 ICMP, 17 UDP, 58 ICMPv6 |
+| `destination_addr` | IPv4 as IPv4-mapped IPv6, like the FIE table |
+| `near_ttl` | TTL of the near probe; the far probe is `near_ttl + 1` |
+| `first_half_word`, `second_half_word` | what the agent probes with: for UDP the source and destination ports; for ICMP and ICMPv6 the first half-word and **0**, since the agent always sends these probes with a zero second half-word (`retina-agent` `caracalDstPort`) |
 
 ## The FIE table
 

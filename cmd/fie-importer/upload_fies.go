@@ -71,20 +71,11 @@ ClickHouse credentials are read from CH_USER and CH_PASSWORD.`,
 	f.IntVar(&o.batchSize, "batch-size", 1_000_000, "rows per insert")
 	f.BoolVar(&o.dropOnFail, "drop-on-fail", true, "drop the table if the upload fails")
 	f.BoolVar(&o.dryRun, "dry-run", false, "count what would be uploaded without touching ClickHouse")
-	f.StringVar(&o.clickhouse.Address, "clickhouse-address", envOr("CLICKHOUSE_ADDRESS", "localhost:9000"), "ClickHouse native address (default from CLICKHOUSE_ADDRESS)")
-	f.StringVar(&o.clickhouse.Database, "clickhouse-database", envOr("CLICKHOUSE_DATABASE", "pam_campaign"), "ClickHouse database (default from CLICKHOUSE_DATABASE)")
-	f.BoolVar(&o.clickhouse.Secure, "clickhouse-secure", false, "connect to ClickHouse with TLS")
+	addClickHouseFlags(f, &o.clickhouse)
 	_ = cmd.MarkFlagRequired("fies-dir")
 	cmd.MarkFlagsMutuallyExclusive("pdids", "pdid-percent")
 	cmd.MarkFlagsMutuallyExclusive("pdids-file", "pdid-percent")
 	return cmd
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }
 
 // filter builds the row filter from the options.
@@ -244,40 +235,12 @@ func dryRun(ctx context.Context, disp *progress.Display, src *fies.Source, reads
 }
 
 func upload(ctx context.Context, disp *progress.Display, src *fies.Source, o *uploadOptions, reads []fies.Read, total int64) (err error) {
-	o.clickhouse.Username = os.Getenv("CH_USER")
-	o.clickhouse.Password = os.Getenv("CH_PASSWORD")
-	if o.clickhouse.Username == "" {
-		return errors.New("CH_USER is not set")
-	}
-	disp.Phase("connecting to ClickHouse at " + o.clickhouse.Address)
-	ch, err := clickhouse.Connect(ctx, &o.clickhouse)
+	ch, err := newTable(ctx, disp, &o.clickhouse, o.table, (*clickhouse.Client).CreateFIETable)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = ch.Close() }()
-	exists, err := ch.TableExists(ctx, o.table)
-	if err != nil {
-		return err
-	}
-	if exists {
-		return fmt.Errorf("table %s.%s already exists", o.clickhouse.Database, o.table)
-	}
-	if err := ch.CreateFIETable(ctx, o.table); err != nil {
-		return err
-	}
-	defer func() {
-		if err == nil || !o.dropOnFail {
-			return
-		}
-		// The context may be canceled: dropping must still happen.
-		dropCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if derr := ch.DropTable(dropCtx, o.table); derr != nil {
-			err = errors.Join(err, derr)
-			return
-		}
-		err = fmt.Errorf("%w (table %s dropped)", err, o.table)
-	}()
+	defer dropOnFailure(ch, o.table, o.dropOnFail, &err)
 
 	disp.Start(total, len(reads))
 	started := time.Now()
@@ -299,7 +262,7 @@ func upload(ctx context.Context, disp *progress.Display, src *fies.Source, o *up
 	fmt.Fprintln(os.Stderr, disp.Success(fmt.Sprintf("uploaded %s rows into %s.%s in %s",
 		group(total), o.clickhouse.Database, o.table, took.Round(100*time.Millisecond))))
 	fmt.Fprintf(os.Stderr, "  %s\n", disp.Dim(fmt.Sprintf("%s distinct PDs · captured %s → %s · %d files · %s rows/s · verified in ClickHouse",
-		group(int64(summary.PDs)), summary.FirstTime, summary.LastTime, len(reads), //nolint:gosec // fits
+		group(summary.PDs), summary.FirstTime, summary.LastTime, len(reads),
 		group(int64(float64(total)/max(took.Seconds(), 1e-3))))))
 	return nil
 }
@@ -356,17 +319,4 @@ func transfer(ctx context.Context, disp *progress.Display, src *fies.Source, ch 
 		return nil
 	})
 	return group.Wait()
-}
-
-// group formats n with thin separators: 20,486,494.
-func group(n int64) string {
-	s := strconv.FormatInt(n, 10)
-	var b strings.Builder
-	for i, c := range s {
-		if i > 0 && (len(s)-i)%3 == 0 {
-			b.WriteByte(',')
-		}
-		b.WriteRune(c)
-	}
-	return b.String()
 }

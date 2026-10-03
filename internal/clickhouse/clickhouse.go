@@ -12,6 +12,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 
 	"fie-importer/internal/fies"
+	"fie-importer/internal/pds"
 )
 
 // FIETableDDL creates the FIE table. It is general across capture formats:
@@ -30,6 +31,22 @@ const FIETableDDL = `CREATE TABLE %s (
     far_reply_recv_time  Nullable(DateTime64(6, 'UTC'))
 ) ENGINE = MergeTree
 ORDER BY (pd_id, capture_time)`
+
+// PDTableDDL creates the PD table. pd_id joins it with the FIE table.
+// IPv4 destinations are IPv4-mapped. The half-words are what the agent probes
+// with: UDP source and destination ports, or the ICMP/ICMPv6 first half-word
+// and zero.
+const PDTableDDL = `CREATE TABLE %s (
+    pd_id            UInt32,
+    agent_id         LowCardinality(String),
+    ip_version       UInt8,
+    protocol         UInt8,
+    destination_addr IPv6,
+    near_ttl         UInt8,
+    first_half_word  UInt16,
+    second_half_word UInt16
+) ENGINE = MergeTree
+ORDER BY pd_id`
 
 // Config says how to reach ClickHouse.
 type Config struct {
@@ -93,10 +110,19 @@ func (c *Client) TableExists(ctx context.Context, table string) (bool, error) {
 
 // CreateFIETable creates the FIE table. It fails if the table exists.
 func (c *Client) CreateFIETable(ctx context.Context, table string) error {
+	return c.createTable(ctx, FIETableDDL, table)
+}
+
+// CreatePDTable creates the PD table. It fails if the table exists.
+func (c *Client) CreatePDTable(ctx context.Context, table string) error {
+	return c.createTable(ctx, PDTableDDL, table)
+}
+
+func (c *Client) createTable(ctx context.Context, ddl, table string) error {
 	if err := ValidateTableName(table); err != nil {
 		return err
 	}
-	if err := c.conn.Exec(ctx, fmt.Sprintf(FIETableDDL, quote(table))); err != nil {
+	if err := c.conn.Exec(ctx, fmt.Sprintf(ddl, quote(table))); err != nil {
 		return fmt.Errorf("cannot create table %s: %w", table, err)
 	}
 	return nil
@@ -113,17 +139,29 @@ func (c *Client) DropTable(ctx context.Context, table string) error {
 	return nil
 }
 
-// Insert sends rows to the table as one batch.
+// Insert sends FIE rows to the table as one batch.
 func (c *Client) Insert(ctx context.Context, table string, rows []fies.Row) error {
+	return insert(ctx, c, table, rows, func(r *fies.Row) []any {
+		return []any{r.SourceFormat, r.PDID, r.CaptureTime, r.FIETransitS,
+			r.NearReplyAddr, r.FarReplyAddr,
+			r.NearProbeSentTime, r.NearReplyRecvTime, r.FarProbeSentTime, r.FarReplyRecvTime}
+	})
+}
+
+// InsertPDs sends PD rows to the table as one batch.
+func (c *Client) InsertPDs(ctx context.Context, table string, rows []pds.Row) error {
+	return insert(ctx, c, table, rows, func(r *pds.Row) []any {
+		return []any{r.PDID, r.AgentID, r.IPVersion, r.Protocol, r.Destination, r.NearTTL, r.FirstHalfWord, r.SecondHalfWord}
+	})
+}
+
+func insert[T any](ctx context.Context, c *Client, table string, rows []T, values func(*T) []any) error {
 	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+quote(table))
 	if err != nil {
 		return fmt.Errorf("cannot prepare insert: %w", err)
 	}
 	for i := range rows {
-		r := &rows[i]
-		if err := batch.Append(r.SourceFormat, r.PDID, r.CaptureTime, r.FIETransitS,
-			r.NearReplyAddr, r.FarReplyAddr,
-			r.NearProbeSentTime, r.NearReplyRecvTime, r.FarProbeSentTime, r.FarReplyRecvTime); err != nil {
+		if err := batch.Append(values(&rows[i])...); err != nil {
 			_ = batch.Abort()
 			return fmt.Errorf("cannot append row: %w", err)
 		}
@@ -147,6 +185,23 @@ func (c *Client) Summarize(ctx context.Context, table string) (Summary, error) {
 	var s Summary
 	q := "SELECT count(), uniqExact(pd_id), toString(min(capture_time)), toString(max(capture_time)) FROM " + quote(table)
 	if err := c.conn.QueryRow(ctx, q).Scan(&s.Rows, &s.PDs, &s.FirstTime, &s.LastTime); err != nil {
+		return s, fmt.Errorf("cannot summarize table %s: %w", table, err)
+	}
+	return s, nil
+}
+
+// PDSummary describes the rows of an uploaded PD table.
+type PDSummary struct {
+	Rows, Agents, IPv4, IPv6, ICMP, UDP, ICMPv6 uint64
+	FirstID, LastID                             uint32
+}
+
+// SummarizePDs counts the PD table's rows by agent, IP version and protocol.
+func (c *Client) SummarizePDs(ctx context.Context, table string) (PDSummary, error) {
+	var s PDSummary
+	q := `SELECT count(), uniqExact(agent_id), countIf(ip_version = 4), countIf(ip_version = 6),
+		countIf(protocol = 1), countIf(protocol = 17), countIf(protocol = 58), min(pd_id), max(pd_id) FROM ` + quote(table)
+	if err := c.conn.QueryRow(ctx, q).Scan(&s.Rows, &s.Agents, &s.IPv4, &s.IPv6, &s.ICMP, &s.UDP, &s.ICMPv6, &s.FirstID, &s.LastID); err != nil {
 		return s, fmt.Errorf("cannot summarize table %s: %w", table, err)
 	}
 	return s, nil
