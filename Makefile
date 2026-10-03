@@ -2,8 +2,8 @@
 
 help:
 	@echo "Valid targets:"
-	@echo "  build       - Format, lint, generate docs, and build fie-importer binary"
-	@echo "  install     - Format, lint, generate docs, build and install fie-importer binary"
+	@echo "  build       - Format, lint and build the fie-importer binary"
+	@echo "  install     - Format, lint, build and install the fie-importer binary"
 	@echo "  lint        - Format code and run linters"
 	@echo "  fmt         - Format code"
 	@echo "  tidy        - Tidy go modules"
@@ -12,7 +12,7 @@ help:
 	@echo "  clean       - Remove built binaries and coverage files"
 
 build: lint
-	go build -o fie-importer ./cmd/fie-importer/main.go
+	go build -o fie-importer ./cmd/fie-importer
 
 install: lint
 	go install ./cmd/fie-importer
