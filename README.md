@@ -1,6 +1,6 @@
 # fie-importer
 
-`fie-importer` imports Retina captures into ClickHouse: the FIEs with `upload-fies`, the PDs they answer with `upload-pds`, and the agent VMs that ran them with `upload-agents`. Version 2 reads the **fies2a** capture files the orchestrator writes since `retina-orchestrator` `research-v1.6.0`: one zstd Parquet file per hour, `fies2a-<interval start>.parquet`, sorted by PD ID. The format is described in `FIES2.md` in the orchestrator repository.
+`fie-importer` imports Retina captures into ClickHouse: the FIEs with `upload-fies`, the PDs they answer with `upload-pds`, the agent VMs that ran them with `upload-agents`, and computes the FDH table from the FIEs and PDs with `compute-fdhs`. Version 2 reads the **fies2a** capture files the orchestrator writes since `retina-orchestrator` `research-v1.6.0`: one zstd Parquet file per hour, `fies2a-<interval start>.parquet`, sorted by PD ID. The format is described in `FIES2.md` in the orchestrator repository.
 
 Version 1 (the `parquet`, `pds` and `current-status` commands, for the original `fies` format) is kept under [`deprecated/`](deprecated/NOTICE.md) for reference only.
 
@@ -201,6 +201,53 @@ ORDER BY (agent_id, snapshot_time)
 A crash-looping agent still has an image: Docker keeps the exited container between restarts. Look at `agent_service_state`, `agent_container_state` and `agent_service_restarts` to tell it from a healthy one.
 
 Prefixes are CIDR strings in canonical form, so ClickHouse can test addresses against them: `isIPAddressInRange(toString(near_reply_addr), external_ipv6_prefix)`.
+
+## compute-fdhs
+
+```bash
+fie-importer compute-fdhs <table> --fies-table <table> --pds-table <table> [options]
+```
+
+Creates the table `<table>` and fills it from an FIE table (`upload-fies`) and a PD table (`upload-pds`), joined on `pd_id`. The query runs on the ClickHouse server: no data passes through `fie-importer`. Progress shows the rows the server has read from both tables against its own estimate.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--fies-table` | (required) | FIE table |
+| `--pds-table` | (required) | PD table |
+| `--drop-on-fail` | `true` | drop the table if the run fails or is interrupted; the running query is killed first |
+| `--dry-run` | `false` | print the `CREATE TABLE` and `INSERT … SELECT` statements without touching ClickHouse |
+| `--clickhouse-*` | | as for `upload-fies`; credentials from `CH_USER` and `CH_PASSWORD` |
+
+- **One row per FIE with a near reply.** FIEs without a near reply are left out. A missing far reply is kept as a NULL `far_addr`. The all-zero address (`::` or `::ffff:0.0.0.0`) counts as missing.
+- **The input tables must be v2 tables**, as `upload-fies` and `upload-pds` create them; a table missing a needed column (for example a v1 PD table with `probing_directive_id`) is refused before anything is created.
+- **FIEs whose PD is not in the PD table are left out** by the join and reported.
+- **Checked after the run**: before creating the table, the FIEs with a near reply and a PD are counted, and the table must hold exactly that many rows. A PD table with a duplicated `pd_id` fails this check.
+
+### The FDH table
+
+```sql
+CREATE TABLE <table> (
+    agent_id         LowCardinality(String),
+    ip_version       UInt8,
+    near_addr        IPv6,
+    destination_addr IPv6,
+    capture_time     DateTime64(6, 'UTC'),
+    pd_id            UInt32,
+    near_ttl         UInt8,
+    far_addr         Nullable(IPv6)
+) ENGINE = MergeTree
+ORDER BY (agent_id, ip_version, near_addr, destination_addr, capture_time, pd_id)
+PRIMARY KEY (agent_id, ip_version, near_addr, destination_addr, capture_time)
+```
+
+An FDH is `(agent_id, ip_version, near_addr, destination_addr)`. Its rows are stored together and in time order, `pd_id` breaking ties of `capture_time` (whole seconds in fies2a), so per-FDH sequences (switches, runs, gaps) read in order. Grouping is left to the queries.
+
+| Column | From |
+| --- | --- |
+| `agent_id`, `ip_version`, `destination_addr`, `near_ttl` | PD table |
+| `near_addr` | FIE `near_reply_addr`, never NULL here |
+| `capture_time`, `pd_id` | FIE table |
+| `far_addr` | FIE `far_reply_addr`; NULL when there was no far reply |
 
 ## The FIE table
 

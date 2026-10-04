@@ -38,6 +38,9 @@ type Display struct {
 	byteTotal int64
 	byteRead  func() int64
 
+	// query is set by StartQuery: the progress of a query on the server.
+	query bool
+
 	start   time.Time
 	mu      sync.Mutex
 	drawn   int // lines drawn by the last frame
@@ -94,6 +97,21 @@ func (d *Display) StartStream(totalBytes int64, read func() int64) {
 	d.byteTotal, d.byteRead = totalBytes, read
 	d.mu.Unlock()
 	d.Start(0, 0)
+}
+
+// StartQuery begins showing the progress of a query running on the server:
+// rows read against the server's estimate, both set with Rows.
+func (d *Display) StartQuery() {
+	d.mu.Lock()
+	d.query = true
+	d.mu.Unlock()
+	d.Start(0, 0)
+}
+
+// Rows sets the rows a query has read and its estimated total.
+func (d *Display) Rows(read, total int64) {
+	d.sent.Store(read)
+	d.total.Store(total)
 }
 
 // Run redraws until Stop is called. Start it in its own goroutine.
@@ -183,6 +201,9 @@ func (d *Display) frame(final bool) []string {
 	if d.byteRead != nil {
 		return d.streamFrame(final)
 	}
+	if d.query {
+		return d.queryFrame(final)
+	}
 	now := time.Now()
 	total, sent := d.total.Load(), d.sent.Load()
 	elapsed := now.Sub(d.start)
@@ -249,6 +270,29 @@ func (d *Display) streamFrame(final bool) []string {
 		d.style(bold, human(sent)+" rows"), d.style(dim, "· "+size+" read"))
 	stats := d.style(dim, fmt.Sprintf("   %s rows/s · ≈%s/s to ClickHouse · elapsed %s · ETA %s",
 		human(int64(rate)), bytesHuman(float64(d.bytes.Load())/max(elapsed.Seconds(), 1e-3)), clock(elapsed), eta))
+	return []string{overall, stats}
+}
+
+func (d *Display) queryFrame(final bool) []string {
+	now := time.Now()
+	total, read := d.total.Load(), d.sent.Load()
+	elapsed := now.Sub(d.start)
+	rate := d.rate(now, read)
+	barWidth := max(10, min(48, d.width-42))
+	frac, eta := 0.0, "—"
+	if total > 0 {
+		frac = min(float64(read)/float64(total), 1)
+		if rate > 0 && !final {
+			eta = clock(time.Duration(float64(max(total-read, 0)) / rate * float64(time.Second)))
+		}
+	}
+	if final {
+		frac, eta = 1, "done"
+	}
+	overall := fmt.Sprintf(" %s %s  %s %s",
+		d.style(cyan, bar(frac, barWidth)), d.style(bold, fmt.Sprintf("%5.1f%%", frac*100)),
+		d.style(bold, human(read)), d.style(dim, "/ ≈"+human(total)+" rows read"))
+	stats := d.style(dim, fmt.Sprintf("   %s rows/s on the server · elapsed %s · ETA %s", human(int64(rate)), clock(elapsed), eta))
 	return []string{overall, stats}
 }
 

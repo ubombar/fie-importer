@@ -1,4 +1,5 @@
-// Package clickhouse creates and fills the ClickHouse FIE table.
+// Package clickhouse creates and fills the ClickHouse FIE, PD, agent and FDH
+// tables.
 package clickhouse
 
 import (
