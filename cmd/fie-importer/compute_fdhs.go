@@ -133,8 +133,14 @@ func checkFDHInput(ctx context.Context, ch *clickhouse.Client, table, command st
 	return nil
 }
 
+// fdhReadTimeout bounds the wait for the server during the insert, which
+// can run for a long time without sending anything back. Ctrl-C still stops
+// it at once.
+const fdhReadTimeout = 24 * time.Hour
+
 func computeFDHs(ctx context.Context, disp *progress.Display, o *computeFDHsOptions) (err error) {
 	var src clickhouse.FDHSource
+	o.clickhouse.ReadTimeout = fdhReadTimeout
 	ch, err := newTable(ctx, disp, &o.clickhouse, o.table, prepareFDHs(disp, o, &src))
 	if err != nil {
 		disp.Stop()

@@ -90,6 +90,9 @@ type Config struct {
 	Username string
 	Password string
 	Secure   bool
+	// ReadTimeout is how long to wait for a reply from the server; zero
+	// keeps the driver's default of 5 minutes.
+	ReadTimeout time.Duration
 }
 
 // Client is a connection to ClickHouse.
@@ -118,6 +121,9 @@ func Connect(ctx context.Context, config *Config) (*Client, error) {
 			Password: config.Password,
 		},
 		Compression: &clickhouse.Compression{Method: clickhouse.CompressionLZ4},
+	}
+	if config.ReadTimeout > 0 {
+		options.ReadTimeout = config.ReadTimeout
 	}
 	if config.Secure {
 		options.TLS = &tls.Config{MinVersion: tls.VersionTLS12}
