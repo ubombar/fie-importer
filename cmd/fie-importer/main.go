@@ -12,7 +12,7 @@ import (
 )
 
 // version is the release of fie-importer.
-const version = "2.3.0"
+const version = "2.4.0"
 
 func main() {
 	os.Exit(run())

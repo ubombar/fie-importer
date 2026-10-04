@@ -45,7 +45,7 @@ ClickHouse credentials are read from CH_USER and CH_PASSWORD.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			o.table = args[0]
-			return runComputeFDHs(cmd.Context(), &o)
+			return logged(cmd, &o.clickhouse, o.table, o.dryRun, func() error { return runComputeFDHs(cmd.Context(), &o) })
 		},
 	}
 	f := cmd.Flags()

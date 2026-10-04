@@ -249,6 +249,41 @@ An FDH is `(agent_id, ip_version, near_addr, destination_addr)`. Its rows are st
 | `capture_time`, `pd_id` | FIE table |
 | `far_addr` | FIE `far_reply_addr`; NULL when there was no far reply |
 
+## The operations table
+
+Every command except a dry run appends one row to `fie_importer_operations` in the target database, creating the table if it does not exist, whether the run succeeds or fails. It answers which command made a table, with which flags, when, and with which version.
+
+```sql
+CREATE TABLE IF NOT EXISTS fie_importer_operations (
+    time       DateTime64(6, 'UTC'),
+    operation  LowCardinality(String),
+    table_name String,
+    command    String,
+    status     LowCardinality(String),
+    error      Nullable(String),
+    duration_s Float64,
+    version    LowCardinality(String),
+    os_user    LowCardinality(String),
+    host       LowCardinality(String)
+) ENGINE = MergeTree
+ORDER BY time
+```
+
+| Column | Meaning |
+| --- | --- |
+| `time` | when the run started |
+| `operation` | the command: `upload-fies`, `upload-pds`, `upload-agents`, `compute-fdhs` |
+| `table_name` | the table the run created or appended to |
+| `command` | the command line as typed, shell-quoted; credentials never appear, since they come only from `CH_USER` and `CH_PASSWORD` |
+| `status`, `error` | `ok`, or `failed` with the error message |
+| `duration_s`, `version`, `os_user`, `host` | how long the run took, the fie-importer version, and who ran it where |
+
+A run that cannot be recorded (for example because ClickHouse is unreachable) prints a warning; the command's own result stands.
+
+```sql
+SELECT time, status, command FROM fie_importer_operations WHERE table_name = 'fdhs_test2' ORDER BY time
+```
+
 ## The FIE table
 
 ```sql
