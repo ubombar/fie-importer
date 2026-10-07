@@ -265,7 +265,7 @@ type Summary struct {
 func (c *Client) Summarize(ctx context.Context, table string) (Summary, error) {
 	var s Summary
 	q := "SELECT count(), uniqExact(pd_id), toString(min(capture_time)), toString(max(capture_time)) FROM " + quote(table)
-	if err := c.conn.QueryRow(ctx, q).Scan(&s.Rows, &s.PDs, &s.FirstTime, &s.LastTime); err != nil {
+	if err := c.conn.QueryRow(noTimeout(ctx), q).Scan(&s.Rows, &s.PDs, &s.FirstTime, &s.LastTime); err != nil {
 		return s, fmt.Errorf("cannot summarize table %s: %w", table, err)
 	}
 	return s, nil

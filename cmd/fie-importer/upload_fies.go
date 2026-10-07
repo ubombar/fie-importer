@@ -23,6 +23,10 @@ import (
 // format before compression, used for the transfer rate shown.
 const approxRowBytes = 85
 
+// summaryReadTimeout bounds the wait for the server, which sends nothing
+// back while it summarizes a large table. Ctrl-C still stops it at once.
+const summaryReadTimeout = 24 * time.Hour
+
 type uploadOptions struct {
 	table      string
 	fiesDir    string
@@ -235,6 +239,9 @@ func dryRun(ctx context.Context, disp *progress.Display, src *fies.Source, reads
 }
 
 func upload(ctx context.Context, disp *progress.Display, src *fies.Source, o *uploadOptions, reads []fies.Read, total int64) (err error) {
+	// The summary at the end scans the whole table, which for a large
+	// upload takes longer than the driver's default 5 minutes.
+	o.clickhouse.ReadTimeout = summaryReadTimeout
 	ch, err := newTable(ctx, disp, &o.clickhouse, o.table, (*clickhouse.Client).CreateFIETable)
 	if err != nil {
 		return err
