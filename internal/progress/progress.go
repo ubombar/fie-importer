@@ -38,6 +38,9 @@ type Display struct {
 	byteTotal int64
 	byteRead  func() int64
 
+	// sink names where the bytes go in the stats line (default ClickHouse).
+	sink string
+
 	// query is set by StartQuery: the progress of a query on the server.
 	query bool
 
@@ -155,6 +158,9 @@ func (d *Display) File(index int, name string, rows int64) {
 	d.fileRead.Store(0)
 }
 
+// SetRead sets the rows done in the current file.
+func (d *Display) SetRead(n int64) { d.fileRead.Store(n) }
+
 // Read counts rows read from the current file.
 func (d *Display) Read(n int64) { d.fileRead.Add(n) }
 
@@ -162,6 +168,27 @@ func (d *Display) Read(n int64) { d.fileRead.Add(n) }
 func (d *Display) Sent(rows, bytes int64) {
 	d.sent.Add(rows)
 	d.bytes.Add(bytes)
+}
+
+// SetSent sets the rows and bytes done so far, for a task that measures its
+// own progress instead of counting batches.
+func (d *Display) SetSent(rows, bytes int64) {
+	d.sent.Store(rows)
+	d.bytes.Store(bytes)
+}
+
+// SetSink names where the bytes go in the stats line, for example "disk".
+func (d *Display) SetSink(name string) {
+	d.mu.Lock()
+	d.sink = name
+	d.mu.Unlock()
+}
+
+func (d *Display) sinkName() string {
+	if d.sink == "" {
+		return "ClickHouse"
+	}
+	return d.sink
 }
 
 func (d *Display) draw(final bool) {
@@ -227,8 +254,8 @@ func (d *Display) frame(final bool) []string {
 		d.style(cyan, bar(frac, barWidth)),
 		d.style(bold, fmt.Sprintf("%5.1f%%", frac*100)),
 		d.style(bold, human(sent)), d.style(dim, "/ "+human(total)+" rows"))
-	stats := d.style(dim, fmt.Sprintf("   %s rows/s · ≈%s/s to ClickHouse · elapsed %s · ETA %s",
-		human(int64(rate)), bytesHuman(byteRate), clock(elapsed), eta))
+	stats := d.style(dim, fmt.Sprintf("   %s rows/s · ≈%s/s to %s · elapsed %s · ETA %s",
+		human(int64(rate)), bytesHuman(byteRate), d.sinkName(), clock(elapsed), eta))
 	lines := []string{overall, stats}
 
 	if !final {

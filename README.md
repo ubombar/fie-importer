@@ -249,6 +249,42 @@ An FDH is `(agent_id, ip_version, near_addr, destination_addr)`. Its rows are st
 | `capture_time`, `pd_id` | FIE table |
 | `far_addr` | FIE `far_reply_addr`; NULL when there was no far reply |
 
+## merge-fies
+
+```bash
+fie-importer merge-fies --fies-dir DIR --output FILE [--overwrite] [--dry-run] [--verify] [--memory-limit 16GB]
+```
+
+Merges the `fies2a-*.parquet` files of `<dir>` into one zstd Parquet file (format `2m`). It only reads and writes local files: no ClickHouse, no credentials, and nothing is recorded in the operations table.
+
+Nothing is sorted. The files are put in order of their `interval_start` metadata (not their names) and their rows are copied one file after the other, so every segment keeps the order of `(pd_id, capture_time)` it had and the file as a whole is not sorted by `pd_id`. The command refuses files whose intervals overlap and warns about gaps. The output is written to `<output>.tmp` and renamed when the row count matches the inputs; it must not exist unless `--overwrite` is given, and it must not be named like an input (`fies2a-*.parquet`) inside `--fies-dir`.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--fies-dir` | (required) | directory containing the `fies2a-*.parquet` files |
+| `--output` | (required) | merged file to write |
+| `--overwrite` | false | replace the output if it exists |
+| `--dry-run` | false | check the files and count rows without writing |
+| `--verify` | false | read the output back (reads the whole output): rows per segment, segment order, `(pd_id, capture_time)` order within each segment |
+| `--memory-limit` | `16GB` | DuckDB memory limit; empty uses DuckDB's own default (80% of RAM) |
+| `--temp-dir` | DuckDB's | DuckDB spill directory |
+| `--threads` | all cores | DuckDB threads |
+| `--row-group-size` | 1,000,000 | rows per Parquet row group |
+
+`capture_second` is relative to its file and only 16 bits wide, so the merged file stores absolute Unix times in seconds (BIGINT) instead:
+
+| Column | Meaning |
+| --- | --- |
+| `pd_id` | as in fies2a |
+| `capture_time` | when the orchestrator received the FIE: interval start + `capture_second` |
+| `fie_build_time` | `capture_time − fie_transit_s`; NULL when the transit is NULL |
+| `near_reply_time`, `far_reply_time` | `fie_build_time − *_reply_age_s`; NULL when there was no reply or the transit is NULL |
+| `near_reply_addr`, `far_reply_addr` | as in fies2a |
+
+As in fies2a, ages and transit of 255 s or more were saturated in the inputs, so a time derived from one of them is only a bound. The file metadata holds `retina.fies.format` (`2m`), `retina.fies.rows`, `retina.fies.files`, `retina.fies.interval_start` and `retina.fies.interval_end`. `upload-fies` does not read this format yet.
+
+On 4 consecutive files (452,984,173 rows, 12 cores) it took 14 s, about 32M rows/s, and wrote 3.49 bytes per FIE.
+
 ## The operations table
 
 Every command except a dry run appends one row to `fie_importer_operations` in the target database, creating the table if it does not exist, whether the run succeeds or fails. It answers which command made a table, with which flags, when, and with which version.

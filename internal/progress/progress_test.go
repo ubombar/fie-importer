@@ -1,6 +1,7 @@
 package progress
 
 import (
+	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -36,5 +37,25 @@ func TestFormats(t *testing.T) {
 	}
 	if got := bytesHuman(9.4e6); got != "9.4 MB" {
 		t.Errorf("bytesHuman = %q", got)
+	}
+}
+
+func TestSetSentAndSink(t *testing.T) {
+	d := &Display{width: 100}
+	d.fileName.Store("f")
+	d.phase.Store("")
+	d.Start(1000, 2)
+	d.SetSink("disk")
+	d.SetSent(250, 4096)
+	d.File(1, "fies2a-a.parquet", 600)
+	d.SetRead(250)
+	joined := strings.Join(d.frame(false), "\n")
+	for _, want := range []string{" 25.0%", "250", "to disk", "file 1/2", "fies2a-a.parquet"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("frame %q lacks %q", joined, want)
+		}
+	}
+	if strings.Contains(joined, "ClickHouse") {
+		t.Errorf("frame %q names ClickHouse", joined)
 	}
 }
